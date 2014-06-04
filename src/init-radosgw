@@ -3,7 +3,7 @@
 # Provides:          radosgw
 # Required-Start:    $remote_fs $named $network $time
 # Required-Stop:     $remote_fs $named $network $time
-# Default-Start:     2 3 4 5
+# Default-Start:     3 5
 # Default-Stop:      0 1 6
 # Short-Description: radosgw RESTful rados gateway
 # Description: radosgw RESTful rados gateway
@@ -35,7 +35,7 @@ done
 PREFIX='client.radosgw.'
 
 # user to run radosgw as (it not specified in ceph.conf)
-DEFAULT_USER='www-data'
+DEFAULT_USER='wwwrun'
 
 RADOSGW=`which radosgw`
 if [ ! -x "$RADOSGW" ]; then
@@ -74,7 +74,7 @@ case "$1" in
             fi
 
             echo "Starting $name..."
-            start-stop-daemon --start -u $user -x $RADOSGW -- -n $name
+	     /sbin/startproc -u $user $RADOSGW -n $name
         done
         daemon_is_running $RADOSGW
         ;;
@@ -98,7 +98,8 @@ case "$1" in
         start-stop-daemon --stop -x $RADOSGW --oknodo $TIMEOUT
         ;;
     status)
-        daemon_is_running $RADOSGW
+	 /sbin/checkproc $RADOSGW
+	 rc_status -v
         ;;
     *)
         echo "Usage: $0 {start|stop|restart|force-reload|reload|status} [-v|--verbose]" >&2
