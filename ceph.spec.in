@@ -106,11 +106,13 @@ Requires:	librbd1 = %{version}-%{release}
 Requires:	librados2 = %{version}-%{release}
 Requires:	python-ceph = %{version}-%{release}
 Requires:	python-requests
-Requires:	redhat-lsb-core
 # python-argparse is only needed in distros with Python 2.6 or lower
 %if (0%{?rhel} && 0%{?rhel} <= 6) || (0%{?suse_version} && 0%{?suse_version} <= 1110)
 Requires:	python-argparse
 BuildRequires:	python-argparse
+%endif
+%if 0%{?rhel} || 0%{?fedora}
+Requires:  redhat-lsb-core
 %endif
 %description -n ceph-common
 common utilities to mount and interact with a ceph storage cluster
