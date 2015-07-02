@@ -82,8 +82,10 @@ Requires(post):	binutils
 BuildRequires: sharutils
 %endif
 # We require this to be present for %%{_tmpfilesdir}
+# systemd package must be installed in build environment for systemd-tmpfiles to work
 %if 0%{?_with_systemd}
 Requires: systemd
+BuildRequires: systemd
 %endif
 BuildRequires:	gcc-c++
 BuildRequires:	boost-devel
