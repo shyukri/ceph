@@ -112,9 +112,6 @@ BuildRequires:	xfsprogs
 BuildRequires:	xfsprogs-devel
 BuildRequires:	xmlstarlet
 BuildRequires:	yasm
-%if 0%{?suse_version}
-BuildRequires:	net-tools
-%endif
 
 #################################################################################
 # distro-conditional dependencies
