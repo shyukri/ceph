@@ -77,6 +77,8 @@ Requires:	parted
 Requires:	util-linux
 Requires:	hdparm
 Requires:	cryptsetup
+Requires:	findutils
+Requires:	which
 Requires(post):	binutils
 %if 0%{with cephfs_java}
 BuildRequires: sharutils
@@ -86,6 +88,7 @@ BuildRequires:	jemalloc-devel
 %endif
 BuildRequires:	gcc-c++
 BuildRequires:	boost-devel
+BuildRequires:  ccache
 BuildRequires:	cryptsetup
 BuildRequires:	gdbm
 BuildRequires:	hdparm
@@ -108,6 +111,7 @@ BuildRequires:	python-requests
 BuildRequires:	python-virtualenv
 BuildRequires:	snappy-devel
 BuildRequires:	util-linux
+BuildRequires:  which
 BuildRequires:	xfsprogs
 BuildRequires:	xfsprogs-devel
 BuildRequires:	xmlstarlet
