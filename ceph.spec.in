@@ -20,7 +20,7 @@
 %endif
 %bcond_with make_check
 
-%ifarch aarch64 x86_64
+%ifnarch s390 s390x
 %bcond_without tcmalloc
 %bcond_without valgrind_devel
 %else
