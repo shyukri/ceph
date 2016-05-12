@@ -944,11 +944,7 @@ fi
 /sbin/ldconfig
 %if 0%{?suse_version}
   %set_permissions %{_bindir}/radosgw
-  # TODO: find out what exactly this systemd-tmpfiles inovcation is for
   systemd-tmpfiles --create %{_tmpfilesdir}/ceph-radosgw.conf
-  # explicit systemctl daemon-reload (that's the only relevant bit of
-  # service_add_post; the rest is all sysvinit --> systemd migration which
-  # isn't applicable in this context (see above comment).
   /usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
 %endif
 
