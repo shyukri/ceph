@@ -24,6 +24,11 @@
 %bcond_with librocksdb
 %bcond_with lowmem_builder
 
+# LTTng-UST enabled on Fedora, RHEL 6+, and SLES 12
+%if 0%{?fedora} || 0%{?rhel} >= 6 || 0%{?suse_version} == 1315
+%bcond_without lttng
+%endif
+
 %if (0%{?el5} || (0%{?rhel_version} >= 500 && 0%{?rhel_version} <= 600))
 %{!?python_sitelib: %global python_sitelib %(%{__python} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")}
 %{!?python_sitearch: %global python_sitearch %(%{__python} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(1))")}
@@ -160,7 +165,7 @@ Requires:       redhat-lsb-core
 BuildRequires:  redhat-lsb-core
 %endif
 # lttng and babeltrace for rbd-replay-prep
-%if 0%{?_with_lttng}
+%if %{with lttng}
 %if 0%{?fedora} || 0%{?rhel}
 BuildRequires:	lttng-ust-devel
 BuildRequires:	libbabeltrace-devel
@@ -546,6 +551,10 @@ export RPM_OPT_FLAGS=`echo $RPM_OPT_FLAGS | sed -e 's/i386/i486/'`
 		--with-systemd-libexec-dir=/usr/lib/ceph/ \
 %endif
 		$MY_CONF_OPT \
+%if %{without lttng}
+		--without-lttng \
+		--without-babeltrace \
+%endif
 		%{?_with_ocf} \
 %if 0%{with tcmalloc}
 		--with-tcmalloc \
@@ -792,7 +801,7 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/rados-classes/libcls_version.so*
 %dir %{_libdir}/ceph/erasure-code
 %{_libdir}/ceph/erasure-code/libec_*.so*
-%if 0%{?_with_lttng}
+%if %{with lttng}
 %{_libdir}/libos_tp.so*
 %{_libdir}/libosd_tp.so*
 %endif
@@ -851,7 +860,7 @@ rm -rf $RPM_BUILD_ROOT
 %{_bindir}/rbd
 %{_bindir}/rbd-replay
 %{_bindir}/rbd-replay-many
-%if 0%{?_with_lttng}
+%if %{with lttng}
 %{_bindir}/rbd-replay-prep
 %endif
 %{_bindir}/ceph-post-file
@@ -1022,7 +1031,7 @@ fi
 %files -n librados2
 %defattr(-,root,root,-)
 %{_libdir}/librados.so.*
-%if 0%{?_with_lttng}
+%if %{with lttng}
 %{_libdir}/librados_tp.so.*
 %endif
 
@@ -1045,7 +1054,7 @@ fi
 %{_includedir}/rados/rados_types.hpp
 %{_includedir}/rados/memory.h
 %{_libdir}/librados.so
-%if 0%{?_with_lttng}
+%if %{with lttng}
 %{_libdir}/librados_tp.so
 %endif
 
@@ -1077,7 +1086,7 @@ fi
 %files -n librbd1
 %defattr(-,root,root,-)
 %{_libdir}/librbd.so.*
-%if 0%{?_with_lttng}
+%if %{with lttng}
 %{_libdir}/librbd_tp.so.*
 %endif
 
@@ -1097,7 +1106,7 @@ ln -sf %{_libdir}/librbd.so.1 /usr/lib64/qemu/librbd.so.1
 %{_includedir}/rbd/librbd.hpp
 %{_includedir}/rbd/features.h
 %{_libdir}/librbd.so
-%if 0%{?_with_lttng}
+%if %{with lttng}
 %{_libdir}/librbd_tp.so
 %endif
 

@@ -1809,6 +1809,9 @@ int OSD::init()
 
   dout(2) << "boot" << dendl;
 
+  int rotating_auth_attempts = 0;
+  const int max_rotating_auth_attempts = 10;
+
   // read superblock
   r = read_superblock();
   if (r < 0) {
@@ -1949,6 +1952,14 @@ int OSD::init()
 
   while (monc->wait_auth_rotating(30.0) < 0) {
     derr << "unable to obtain rotating service keys; retrying" << dendl;
+    ++rotating_auth_attempts;
+    if (rotating_auth_attempts > max_rotating_auth_attempts) {
+        osd_lock.Lock(); // make locker happy
+        if (!is_stopping()) {
+            r = - ETIMEDOUT;
+        }
+        goto monout;
+    }
   }
 
   osd_lock.Lock();
@@ -2089,6 +2100,13 @@ void OSD::final_init()
     "name=objname,type=CephObjectname",
     test_ops_hook,
     "inject metadata error");
+  assert(r == 0);
+  r = admin_socket->register_command(
+    "set_recovery_delay",
+    "set_recovery_delay " \
+    "name=utime,type=CephInt,req=false",
+    test_ops_hook,
+     "Delay osd recovery by specified seconds");
   assert(r == 0);
 }
 
@@ -2323,6 +2341,7 @@ int OSD::shutdown()
   cct->get_admin_socket()->unregister_command("truncobj");
   cct->get_admin_socket()->unregister_command("injectdataerr");
   cct->get_admin_socket()->unregister_command("injectmdataerr");
+  cct->get_admin_socket()->unregister_command("set_recovery_delay");
   delete test_ops_hook;
   test_ops_hook = NULL;
 
@@ -2840,7 +2859,7 @@ void OSD::load_pgs()
 	  derr << __func__ << ": could not find map for epoch " << map_epoch
 	       << " on pg " << pgid << ", but the pool is not present in the "
 	       << "current map, so this is probably a result of bug 10617.  "
-	       << "Skipping the pg for now, you can use ceph_objectstore_tool "
+	       << "Skipping the pg for now, you can use ceph-objectstore-tool "
 	       << "to clean it up later." << dendl;
 	  continue;
 	} else {
@@ -2965,8 +2984,11 @@ void OSD::build_past_intervals_parallel()
       PG *pg = i->second;
 
       epoch_t start, end;
-      if (!pg->_calc_past_interval_range(&start, &end, superblock.oldest_map))
+      if (!pg->_calc_past_interval_range(&start, &end, superblock.oldest_map)) {
+        if (pg->info.history.same_interval_since == 0)
+          pg->info.history.same_interval_since = end;
         continue;
+      }
 
       dout(10) << pg->info.pgid << " needs " << start << "-" << end << dendl;
       pistate& p = pis[pg];
@@ -3049,6 +3071,24 @@ void OSD::build_past_intervals_parallel()
 	p.up_primary = up_primary;
 	p.same_interval_since = cur_epoch;
       }
+    }
+  }
+
+  // Now that past_intervals have been recomputed let's fix the same_interval_since
+  // if it was cleared by import.
+  for (map<PG*,pistate>::iterator i = pis.begin(); i != pis.end(); ++i) {
+    PG *pg = i->first;
+    pistate& p = i->second;
+
+    // Verify same_interval_since is correct
+    if (pg->info.history.same_interval_since) {
+      assert(pg->info.history.same_interval_since == p.same_interval_since);
+    } else {
+      assert(p.same_interval_since);
+      dout(10) << __func__ << " fix same_interval_since " << p.same_interval_since << " pg " << *pg << dendl;
+      dout(10) << __func__ << " past_intervals " << pg->past_intervals << dendl;
+      // Fix it
+      pg->info.history.same_interval_since = p.same_interval_since;
     }
   }
 
@@ -4011,6 +4051,8 @@ void OSD::check_ops_in_flight()
 //   truncobj <pool-id> [namespace/]<obj-name> <newlen>
 //   injectmdataerr [namespace/]<obj-name>
 //   injectdataerr [namespace/]<obj-name>
+//
+//   set_recovery_delay [utime]
 void TestOpsSocketHook::test_ops(OSDService *service, ObjectStore *store,
      std::string command, cmdmap_t& cmdmap, ostream &ss)
 {
@@ -4131,6 +4173,24 @@ void TestOpsSocketHook::test_ops(OSDService *service, ObjectStore *store,
       store->inject_mdata_error(obj);
       ss << "ok";
     }
+    return;
+  }
+  if (command == "set_recovery_delay") {
+    int64_t delay;
+    cmd_getval(service->cct, cmdmap, "utime", delay, (int64_t)0);
+    ostringstream oss;
+    oss << delay;
+    int r = service->cct->_conf->set_val("osd_recovery_delay_start",
+					 oss.str().c_str());
+    if (r != 0) {
+      ss << "set_recovery_delay: error setting "
+	 << "osd_recovery_delay_start to '" << delay << "': error "
+	 << r;
+      return;
+    }
+    service->cct->_conf->apply_changes(NULL);
+    ss << "set_recovery_delay: set osd_recovery_delay_start "
+       << "to " << service->cct->_conf->osd_recovery_delay_start;
     return;
   }
   ss << "Internal error - command=" << command;
@@ -6706,11 +6766,7 @@ void OSD::consume_map()
   for (set<spg_t>::iterator p = pgs_to_check.begin();
        p != pgs_to_check.end();
        ++p) {
-    vector<int> acting;
-    int nrep = osdmap->pg_to_acting_osds(p->pgid, acting);
-    int role = osdmap->calc_pg_role(whoami, acting, nrep);
-
-    if (role < 0) {
+    if (!(osdmap->is_acting_osd_shard(p->pgid, whoami, p->shard))) {
       set<Session*> concerned_sessions;
       get_sessions_possibly_interested_in_pg(*p, &concerned_sessions);
       for (set<Session*>::iterator i = concerned_sessions.begin();

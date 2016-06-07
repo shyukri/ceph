@@ -751,8 +751,6 @@ function test_mon_mds()
   mdsmapfile=$TMPDIR/mdsmap.$$
   current_epoch=$(ceph mds getmap -o $mdsmapfile --no-log-to-stderr 2>&1 | grep epoch | sed 's/.*epoch //')
   [ -s $mdsmapfile ]
-  ((epoch = current_epoch + 1))
-  ceph mds setmap -i $mdsmapfile $epoch
   rm $mdsmapfile
 
   ceph osd pool create data2 10
@@ -1398,13 +1396,17 @@ function test_mon_osd_misc()
   ceph pg set_full_ratio 95 2>$TMPFILE; check_response 'not in range' $? 22
 
   # expect "not in range" for invalid overload percentage
-  ceph osd reweight-by-utilization 80 2>$TMPFILE; check_response 'not in range' $? 22
+  ceph osd reweight-by-utilization 80 2>$TMPFILE; check_response 'higher than 100' $? 22
 
   set -e
 
   ceph osd reweight-by-utilization 110
+  ceph osd reweight-by-utilization 110 .5
+  ceph osd test-reweight-by-utilization 110 .5 --no-increasing
   ceph osd reweight-by-pg 110
+  ceph osd test-reweight-by-pg 110 .5
   ceph osd reweight-by-pg 110 rbd
+  ceph osd reweight-by-pg 110 .5 rbd
   expect_false ceph osd reweight-by-pg 110 boguspoolasdfasdfasdf
 }
 
