@@ -26,7 +26,9 @@
 
 # LTTng-UST enabled on Fedora, RHEL 6+, and SLES 12
 %if 0%{?fedora} || 0%{?rhel} >= 6 || 0%{?suse_version} == 1315
+%if ! 0%{?is_opensuse}
 %bcond_without lttng
+%endif
 %endif
 
 %if (0%{?el5} || (0%{?rhel_version} >= 500 && 0%{?rhel_version} <= 600))
@@ -35,11 +37,6 @@
 %endif
 
 %{!?_udevrulesdir: %global _udevrulesdir /lib/udev/rules.d}
-
-# LTTng-UST enabled on Fedora, RHEL 6, and SLES 12
-%if 0%{?fedora} || 0%{?rhel} == 6 || 0%{?suse_version} == 1315
-%global _with_lttng 1
-%endif
 
 # Use systemd files on RHEL 7 and above and in SUSE/openSUSE.
 # Note: We don't install unit files for the services yet. For now,
