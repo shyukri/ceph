@@ -16,13 +16,20 @@
 #
 
 %bcond_with ocf
-%bcond_without cephfs_java
 %bcond_with tests
 %bcond_without tcmalloc
 %bcond_with jemalloc
 %bcond_without libs_compat
 %bcond_with librocksdb
 %bcond_with lowmem_builder
+
+# Java disabled on SUSE
+%if 0%{?suse_version}
+%bcond_with cephfs_java
+%endif
+%if ! 0%{?suse_version}
+%bcond_without cephfs_java
+%endif
 
 # LTTng-UST enabled on Fedora, RHEL 6+, and SLES 12
 %if 0%{?fedora} || 0%{?rhel} >= 6 || 0%{?suse_version} == 1315
