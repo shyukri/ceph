@@ -473,7 +473,6 @@ Group:		Development/Libraries
 License:	LGPL-2.0
 Provides:	ceph-devel = %{version}-%{release}
 Obsoletes:	ceph-devel < %{version}-%{release}
-Requires:	%{name} = %{version}-%{release}
 Requires:	librados2-devel = %{version}-%{release}
 Requires:	libradosstriper1-devel = %{version}-%{release}
 Requires:	librbd1-devel = %{version}-%{release}
