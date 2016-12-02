@@ -157,8 +157,8 @@
     --order arg               object order [12 <= order <= 25]
     --object-size arg         object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg       image features
-                              [layering(+), striping, exclusive-lock(+*),
-                              object-map(+*), fast-diff(+*), deep-flatten(+-),
+                              [layering(+), striping(+), exclusive-lock(*),
+                              object-map(*), fast-diff(*), deep-flatten(-),
                               journaling(*)]
     --image-shared            shared image
     --stripe-unit arg         stripe unit
@@ -201,8 +201,8 @@
     --order arg                  object order [12 <= order <= 25]
     --object-size arg            object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg          image features
-                                 [layering(+), striping, exclusive-lock(+*),
-                                 object-map(+*), fast-diff(+*), deep-flatten(+-),
+                                 [layering(+), striping(+), exclusive-lock(*),
+                                 object-map(*), fast-diff(*), deep-flatten(-),
                                  journaling(*)]
     --image-shared               shared image
     --stripe-unit arg            stripe unit
@@ -244,8 +244,8 @@
     --order arg               object order [12 <= order <= 25]
     --object-size arg         object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg       image features
-                              [layering(+), striping, exclusive-lock(+*),
-                              object-map(+*), fast-diff(+*), deep-flatten(+-),
+                              [layering(+), striping(+), exclusive-lock(*),
+                              object-map(*), fast-diff(*), deep-flatten(-),
                               journaling(*)]
     --image-shared            shared image
     --stripe-unit arg         stripe unit
@@ -492,8 +492,8 @@
     --order arg               object order [12 <= order <= 25]
     --object-size arg         object size in B/K/M [4K <= object size <= 32M]
     --image-feature arg       image features
-                              [layering(+), striping, exclusive-lock(+*),
-                              object-map(+*), fast-diff(+*), deep-flatten(+-),
+                              [layering(+), striping(+), exclusive-lock(*),
+                              object-map(*), fast-diff(*), deep-flatten(-),
                               journaling(*)]
     --image-shared            shared image
     --stripe-unit arg         stripe unit
