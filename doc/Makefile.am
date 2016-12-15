@@ -1,4 +1,26 @@
 EXTRA_DIST = \
+	api \
+	architecture.rst \
+	cephfs \
+	conf.py \
+	dev \
+	favicon.ico \
+	glossary.rst /
+	images /
+	index.rst /
+	install /
+	logo.png /
+	Makefile.am /
+	mon /
+	rados /
+	radosgw /
+	rbd /
+	release-notes.rst /
+	releases.rst /
+	scripts /
+	start /
+	_templates /
+	_themes
 	man/8/ceph-authtool.rst	\
 	man/8/ceph-clsinfo.rst	\
 	man/8/ceph-conf.rst	\
