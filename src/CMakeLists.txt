@@ -589,8 +589,7 @@ add_library(ceph-common SHARED ${ceph_common_objs})
 target_link_libraries(ceph-common ${ceph_common_deps})
 # appease dpkg-shlibdeps
 set_target_properties(ceph-common PROPERTIES
-  SOVERSION 0
-  INSTALL_RPATH "")
+  SOVERSION 0)
 install(TARGETS ceph-common DESTINATION ${CMAKE_INSTALL_PKGLIBDIR})
 
 add_library(common_utf8 STATIC common/utf8.c)
@@ -634,8 +633,6 @@ if (WITH_MGR)
   target_include_directories(ceph-mgr PRIVATE "${PYTHON_INCLUDE_DIRS}")
   target_link_libraries(ceph-mgr mds osdc global-static common
       ${Boost_PYTHON_LIBRARY} ${PYTHON_LIBRARIES} ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS} ${ALLOC_LIBS})
-  set_target_properties(ceph-mgr PROPERTIES
-    INSTALL_RPATH "")
   install(TARGETS ceph-mgr DESTINATION bin)
 endif (WITH_MGR)
 
@@ -728,8 +725,6 @@ add_dependencies(ceph-mon erasure_code_plugins)
 target_link_libraries(ceph-mon mon common os global-static common
   ${EXTRALIBS}
   ${CMAKE_DL_LIBS})
-set_target_properties(ceph-mon PROPERTIES
-  INSTALL_RPATH "")
 install(TARGETS ceph-mon DESTINATION bin)
 
 # OSD/ObjectStore
@@ -796,8 +791,6 @@ add_executable(ceph-osd ${ceph_osd_srcs}
 add_dependencies(ceph-osd erasure_code_plugins)
 target_link_libraries(ceph-osd osd os global-static common
   ${BLKID_LIBRARIES} ${RDMA_LIBRARIES})
-set_target_properties(ceph-osd PROPERTIES
-  INSTALL_RPATH "")
 if(WITH_FUSE)
   target_link_libraries(ceph-osd ${FUSE_LIBRARIES})
 endif()
@@ -810,8 +803,6 @@ add_executable(ceph-mds ${ceph_mds_srcs}
   $<TARGET_OBJECTS:common_util_obj>)
 target_link_libraries(ceph-mds mds ${CMAKE_DL_LIBS} global-static common
   ${Boost_THREAD_LIBRARY})
-set_target_properties(ceph-mds PROPERTIES
-  INSTALL_RPATH "")
 install(TARGETS ceph-mds DESTINATION bin)
 
 add_subdirectory(erasure-code)
@@ -921,8 +912,6 @@ if(WITH_LIBCEPHFS)
   add_executable(mount.ceph ${mount_ceph_srcs}
     $<TARGET_OBJECTS:parse_secret_objs>
     $<TARGET_OBJECTS:common_mountcephfs_objs>)
-  set_target_properties(mount.ceph PROPERTIES
-    INSTALL_RPATH "")
   target_link_libraries(mount.ceph ${KEYUTILS_LIBRARIES})
 
   install(TARGETS ceph-syn DESTINATION bin)
