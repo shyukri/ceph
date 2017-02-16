@@ -128,9 +128,10 @@ void OSDMonitor::create_initial()
   // new clusters should sort bitwise by default.
   newmap.set_flag(CEPH_OSDMAP_SORTBITWISE);
 
-  // new cluster should require jewel and kraken by default
+  // new cluster should require latest by default
   newmap.set_flag(CEPH_OSDMAP_REQUIRE_JEWEL);
   newmap.set_flag(CEPH_OSDMAP_REQUIRE_KRAKEN);
+  newmap.set_flag(CEPH_OSDMAP_REQUIRE_LUMINOUS);
 
   // encode into pending incremental
   newmap.encode(pending_inc.fullmap,
@@ -632,7 +633,7 @@ protected:
     }
   }
 
-  virtual void dump_item(const CrushTreeDumper::Item &qi, F *f) {
+  void dump_item(const CrushTreeDumper::Item &qi, F *f) override {
     if (!tree && qi.is_bucket())
       return;
 
@@ -645,7 +646,7 @@ protected:
     if (average_util)
       var = util / average_util;
 
-    size_t num_pgs = pgm->get_num_pg_by_osd(qi.id);
+    size_t num_pgs = qi.is_bucket() ? 0 : pgm->get_num_pg_by_osd(qi.id);
 
     dump_item(qi, reweight, kb, kb_used, kb_avail, util, var, num_pgs, f);
 
@@ -783,7 +784,7 @@ protected:
   friend std::ostream &operator<<(ostream& out, const lowprecision_t& v);
 
   using OSDUtilizationDumper<TextTable>::dump_item;
-  virtual void dump_item(const CrushTreeDumper::Item &qi,
+  void dump_item(const CrushTreeDumper::Item &qi,
 			 float &reweight,
 			 int64_t kb,
 			 int64_t kb_used,
@@ -791,7 +792,7 @@ protected:
 			 double& util,
 			 double& var,
 			 const size_t num_pgs,
-			 TextTable *tbl) {
+			 TextTable *tbl) override {
     *tbl << qi.id
 	 << weightf_t(qi.weight)
 	 << weightf_t(reweight)
@@ -799,8 +800,13 @@ protected:
 	 << si_t(kb_used << 10)
 	 << si_t(kb_avail << 10)
 	 << lowprecision_t(util)
-	 << lowprecision_t(var)
-	 << num_pgs;
+	 << lowprecision_t(var);
+
+    if (qi.is_bucket()) {
+      *tbl << "-";
+    } else {
+      *tbl << num_pgs;
+    }
 
     if (tree) {
       ostringstream name;
@@ -862,7 +868,7 @@ public:
 
 protected:
   using OSDUtilizationDumper<Formatter>::dump_item;
-  virtual void dump_item(const CrushTreeDumper::Item &qi,
+  void dump_item(const CrushTreeDumper::Item &qi,
 			 float &reweight,
 			 int64_t kb,
 			 int64_t kb_used,
@@ -870,7 +876,7 @@ protected:
 			 double& util,
 			 double& var,
 			 const size_t num_pgs,
-			 Formatter *f) {
+			 Formatter *f) override {
     f->open_object_section("item");
     CrushTreeDumper::dump_item_fields(crush, qi, f);
     f->dump_float("reweight", reweight);
@@ -1125,6 +1131,11 @@ void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
     tmp.apply_incremental(pending_inc);
 
     // determine appropriate features
+    if (!tmp.test_flag(CEPH_OSDMAP_REQUIRE_LUMINOUS)) {
+      dout(10) << __func__ << " encoding without feature SERVER_LUMINOUS"
+	       << dendl;
+      features &= ~CEPH_FEATURE_SERVER_LUMINOUS;
+    }
     if (!tmp.test_flag(CEPH_OSDMAP_REQUIRE_JEWEL)) {
       dout(10) << __func__ << " encoding without feature SERVER_JEWEL" << dendl;
       features &= ~CEPH_FEATURE_SERVER_JEWEL;
@@ -1509,7 +1520,7 @@ public:
     MonOpRequestRef op)
     : C_MonOp(op), osdmon(osdmon) {}
 
-  void _finish(int) {
+  void _finish(int) override {
     MOSDMarkMeDown *m = static_cast<MOSDMarkMeDown*>(op->get_req());
     osdmon->mon->send_reply(
       op,
@@ -1923,6 +1934,16 @@ bool OSDMonitor::preprocess_boot(MonOpRequestRef op)
     goto ignore;
   }
 
+  if (osdmap.test_flag(CEPH_OSDMAP_REQUIRE_LUMINOUS) &&
+      !HAVE_FEATURE(m->osd_features, SERVER_LUMINOUS)) {
+    mon->clog->info() << "disallowing boot of OSD "
+		      << m->get_orig_source_inst()
+		      << " because the osdmap requires"
+		      << " CEPH_FEATURE_SERVER_LUMINOUS"
+		      << " but the osd lacks CEPH_FEATURE_SERVER_LUMINOUS\n";
+    goto ignore;
+  }
+
   if (osdmap.test_flag(CEPH_OSDMAP_REQUIRE_JEWEL) &&
       !(m->osd_features & CEPH_FEATURE_SERVER_JEWEL)) {
     mon->clog->info() << "disallowing boot of OSD "
@@ -1934,7 +1955,7 @@ bool OSDMonitor::preprocess_boot(MonOpRequestRef op)
   }
 
   if (osdmap.test_flag(CEPH_OSDMAP_REQUIRE_KRAKEN) &&
-      !(m->osd_features & CEPH_FEATURE_SERVER_KRAKEN)) {
+      !HAVE_FEATURE(m->osd_features, SERVER_KRAKEN)) {
     mon->clog->info() << "disallowing boot of OSD "
 		      << m->get_orig_source_inst()
 		      << " because the osdmap requires"
@@ -1965,8 +1986,17 @@ bool OSDMonitor::preprocess_boot(MonOpRequestRef op)
     }
   }
 
+  // make sure upgrades stop at luminous
+  if (HAVE_FEATURE(m->osd_features, SERVER_M) &&
+      !osdmap.test_flag(CEPH_OSDMAP_REQUIRE_LUMINOUS)) {
+    mon->clog->info() << "disallowing boot of post-luminous OSD "
+		      << m->get_orig_source_inst()
+		      << " because require_luminous_osds is not set\n";
+    goto ignore;
+  }
+
   // make sure upgrades stop at jewel
-  if ((m->osd_features & CEPH_FEATURE_SERVER_KRAKEN) &&
+  if (HAVE_FEATURE(m->osd_features, SERVER_KRAKEN) &&
       !osdmap.test_flag(CEPH_OSDMAP_REQUIRE_JEWEL)) {
     mon->clog->info() << "disallowing boot of post-jewel OSD "
 		      << m->get_orig_source_inst()
@@ -2880,9 +2910,16 @@ void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
   } else {
     int num_in_osds = 0;
     int num_down_in_osds = 0;
+    set<int> osds;
     for (int i = 0; i < osdmap.get_max_osd(); i++) {
-      if (!osdmap.exists(i) || osdmap.is_out(i))
-	continue;
+      if (!osdmap.exists(i)) {
+        if (osdmap.crush->item_exists(i)) {
+          osds.insert(i);
+        }
+	 continue;
+      } 
+      if (osdmap.is_out(i))
+        continue;
       ++num_in_osds;
       if (!osdmap.is_up(i)) {
 	++num_down_in_osds;
@@ -2902,6 +2939,15 @@ void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
       summary.push_back(make_pair(HEALTH_WARN, ss.str()));
     }
 
+    if (!osds.empty()) {
+      ostringstream ss;
+      ss << "osds were removed from osdmap, but still kept in crushmap";
+      summary.push_back(make_pair(HEALTH_WARN, ss.str()));
+      if (detail) {
+        ss << " osds: [" << osds << "]";
+        detail->push_back(make_pair(HEALTH_WARN, ss.str()));
+      }
+    } 
     // warn about flags
     uint64_t warn_flags =
       CEPH_OSDMAP_FULL |
@@ -3012,7 +3058,15 @@ void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
     }
 
     // warn about upgrade flags that can be set but are not.
-    if ((osdmap.get_up_osd_features() & CEPH_FEATURE_SERVER_KRAKEN) &&
+    if (HAVE_FEATURE(osdmap.get_up_osd_features(), SERVER_LUMINOUS) &&
+	!osdmap.test_flag(CEPH_OSDMAP_REQUIRE_LUMINOUS)) {
+      string msg = "all OSDs are running luminous or later but the"
+	" 'require_luminous_osds' osdmap flag is not set";
+      summary.push_back(make_pair(HEALTH_WARN, msg));
+      if (detail) {
+	detail->push_back(make_pair(HEALTH_WARN, msg));
+      }
+    } else if (HAVE_FEATURE(osdmap.get_up_osd_features(), SERVER_KRAKEN) &&
 	!osdmap.test_flag(CEPH_OSDMAP_REQUIRE_KRAKEN)) {
       string msg = "all OSDs are running kraken or later but the"
 	" 'require_kraken_osds' osdmap flag is not set";
@@ -3020,7 +3074,7 @@ void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
       if (detail) {
 	detail->push_back(make_pair(HEALTH_WARN, msg));
       }
-    } else if ((osdmap.get_up_osd_features() & CEPH_FEATURE_SERVER_JEWEL) &&
+    } else if (HAVE_FEATURE(osdmap.get_up_osd_features(), SERVER_JEWEL) &&
 	       !osdmap.test_flag(CEPH_OSDMAP_REQUIRE_JEWEL)) {
       string msg = "all OSDs are running jewel or later but the"
 	" 'require_jewel_osds' osdmap flag is not set";
@@ -5168,6 +5222,9 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
       return -E2BIG;
     }
     p.set_pg_num(n);
+    // force pre-luminous clients to resend their ops, since they
+    // don't understand that split PGs now form a new interval.
+    p.last_force_op_resend_preluminous = pending_inc.epoch;
   } else if (var == "pgp_num") {
     if (p.has_flag(pg_pool_t::FLAG_NOPGCHANGE)) {
       ss << "pool pgp_num change is disabled; you must unset nopgchange flag for the pool first";
@@ -5214,10 +5271,29 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
       return -EINVAL;
     }
     p.crush_ruleset = n;
-  } else if (var == "hashpspool" || var == "nodelete" || var == "nopgchange" ||
+  } else if (var == "nodelete" || var == "nopgchange" ||
 	     var == "nosizechange" || var == "write_fadvise_dontneed" ||
 	     var == "noscrub" || var == "nodeep-scrub") {
     uint64_t flag = pg_pool_t::get_flag_by_name(var);
+    // make sure we only compare against 'n' if we didn't receive a string
+    if (val == "true" || (interr.empty() && n == 1)) {
+      p.set_flag(flag);
+    } else if (val == "false" || (interr.empty() && n == 0)) {
+      p.unset_flag(flag);
+    } else {
+      ss << "expecting value 'true', 'false', '0', or '1'";
+      return -EINVAL;
+    }
+  } else if (var == "hashpspool") {
+    uint64_t flag = pg_pool_t::get_flag_by_name(var);
+    string force;
+    cmd_getval(g_ceph_context, cmdmap, "force", force);
+    if (force != "--yes-i-really-mean-it") {
+      ss << "are you SURE?  this will remap all placement groups in this pool,"
+	    " this triggers large data movement,"
+	    " pass --yes-i-really-mean-it if you really do.";
+      return -EPERM;
+    }
     // make sure we only compare against 'n' if we didn't receive a string
     if (val == "true" || (interr.empty() && n == 1)) {
       p.set_flag(flag);
@@ -6461,7 +6537,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       if (!osdmap.test_flag(CEPH_OSDMAP_SORTBITWISE)) {
 	ss << "the sortbitwise flag must be set before require_jewel_osds";
 	err = -EPERM;
-      } else if (osdmap.get_up_osd_features() & CEPH_FEATURE_SERVER_JEWEL) {
+      } else if (HAVE_FEATURE(osdmap.get_up_osd_features(), SERVER_JEWEL)) {
 	return prepare_set_flag(op, CEPH_OSDMAP_REQUIRE_JEWEL);
       } else {
 	ss << "not all up OSDs have CEPH_FEATURE_SERVER_JEWEL feature";
@@ -6471,13 +6547,27 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       if (!osdmap.test_flag(CEPH_OSDMAP_SORTBITWISE)) {
 	ss << "the sortbitwise flag must be set before require_kraken_osds";
 	err = -EPERM;
-      } else if (osdmap.get_up_osd_features() & CEPH_FEATURE_SERVER_KRAKEN) {
+      } else if (HAVE_FEATURE(osdmap.get_up_osd_features(), SERVER_KRAKEN)) {
 	bool r = prepare_set_flag(op, CEPH_OSDMAP_REQUIRE_KRAKEN);
 	// ensure JEWEL is also set
 	pending_inc.new_flags |= CEPH_OSDMAP_REQUIRE_JEWEL;
 	return r;
       } else {
 	ss << "not all up OSDs have CEPH_FEATURE_SERVER_KRAKEN feature";
+	err = -EPERM;
+      }
+    } else if (key == "require_luminous_osds") {
+      if (!osdmap.test_flag(CEPH_OSDMAP_SORTBITWISE)) {
+	ss << "the sortbitwise flag must be set before require_luminous_osds";
+	err = -EPERM;
+      } else if (HAVE_FEATURE(osdmap.get_up_osd_features(), SERVER_LUMINOUS)) {
+	bool r = prepare_set_flag(op, CEPH_OSDMAP_REQUIRE_LUMINOUS);
+	// ensure JEWEL and KRAKEN are also set
+	pending_inc.new_flags |= CEPH_OSDMAP_REQUIRE_JEWEL;
+	pending_inc.new_flags |= CEPH_OSDMAP_REQUIRE_KRAKEN;
+	return r;
+      } else {
+	ss << "not all up OSDs have CEPH_FEATURE_SERVER_LUMINOUS feature";
 	err = -EPERM;
       }
     } else {
@@ -6512,9 +6602,10 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       return prepare_unset_flag(op, CEPH_OSDMAP_NODEEP_SCRUB);
     else if (key == "notieragent")
       return prepare_unset_flag(op, CEPH_OSDMAP_NOTIERAGENT);
-    else if (key == "sortbitwise")
-      return prepare_unset_flag(op, CEPH_OSDMAP_SORTBITWISE);
-    else {
+    else if (key == "sortbitwise") {
+      ss << "the sortbitwise flag is required and cannot be unset";
+      err = -EPERM;
+    } else {
       ss << "unrecognized flag '" << key << "'";
       err = -EINVAL;
     }
@@ -7451,9 +7542,9 @@ done:
     pg_pool_t *np = pending_inc.get_new_pool(pool_id, p);
     np->read_tier = overlaypool_id;
     np->write_tier = overlaypool_id;
-    np->last_force_op_resend = pending_inc.epoch;
+    np->set_last_force_op_resend(pending_inc.epoch);
     pg_pool_t *noverlay_p = pending_inc.get_new_pool(overlaypool_id, overlay_p);
-    noverlay_p->last_force_op_resend = pending_inc.epoch;
+    noverlay_p->set_last_force_op_resend(pending_inc.epoch);
     ss << "overlay for '" << poolstr << "' is now (or already was) '" << overlaypoolstr << "'";
     if (overlay_p->cache_mode == pg_pool_t::CACHEMODE_NONE)
       ss <<" (WARNING: overlay pool cache_mode is still NONE)";
@@ -7487,16 +7578,16 @@ done:
     if (np->has_read_tier()) {
       const pg_pool_t *op = osdmap.get_pg_pool(np->read_tier);
       pg_pool_t *nop = pending_inc.get_new_pool(np->read_tier,op);
-      nop->last_force_op_resend = pending_inc.epoch;
+      nop->set_last_force_op_resend(pending_inc.epoch);
     }
     if (np->has_write_tier()) {
       const pg_pool_t *op = osdmap.get_pg_pool(np->write_tier);
       pg_pool_t *nop = pending_inc.get_new_pool(np->write_tier, op);
-      nop->last_force_op_resend = pending_inc.epoch;
+      nop->set_last_force_op_resend(pending_inc.epoch);
     }
     np->clear_read_tier();
     np->clear_write_tier();
-    np->last_force_op_resend = pending_inc.epoch;
+    np->set_last_force_op_resend(pending_inc.epoch);
     ss << "there is now (or already was) no overlay for '" << poolstr << "'";
     wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, ss.str(),
 					      get_last_committed() + 1));
@@ -7730,8 +7821,8 @@ done:
     np->tiers.insert(tierpool_id);
     np->read_tier = np->write_tier = tierpool_id;
     np->set_snap_epoch(pending_inc.epoch); // tier will update to our snap info
-    np->last_force_op_resend = pending_inc.epoch;
-    ntp->last_force_op_resend = pending_inc.epoch;
+    np->set_last_force_op_resend(pending_inc.epoch);
+    ntp->set_last_force_op_resend(pending_inc.epoch);
     ntp->tier_of = pool_id;
     ntp->cache_mode = mode;
     ntp->hit_set_count = g_conf->osd_tier_default_cache_hit_set_count;
@@ -7878,6 +7969,14 @@ bool OSDMonitor::preprocess_pool_op(MonOpRequestRef op)
 {
   op->mark_osdmon_event(__func__);
   MPoolOp *m = static_cast<MPoolOp*>(op->get_req());
+  
+  if (m->fsid != mon->monmap->fsid) {
+    dout(0) << __func__ << " drop message on fsid " << m->fsid
+            << " != " << mon->monmap->fsid << " for " << *m << dendl;
+    _pool_op_reply(op, -EINVAL, osdmap.get_epoch());
+    return true;
+  }
+
   if (m->op == POOL_OP_CREATE)
     return preprocess_pool_op_create(op);
 
@@ -8205,7 +8304,7 @@ bool OSDMonitor::_check_become_tier(
   if (tier_pool->has_tiers()) {
     *ss << "pool '" << tier_pool_name << "' has following tier(s) already:";
     for (set<uint64_t>::iterator it = tier_pool->tiers.begin();
-         it != tier_pool->tiers.end(); it++)
+         it != tier_pool->tiers.end(); ++it)
       *ss << "'" << osdmap.get_pool_name(*it) << "',";
     *ss << " multiple tiers are not yet supported.";
     *err = -EINVAL;

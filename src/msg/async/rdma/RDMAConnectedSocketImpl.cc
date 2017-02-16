@@ -39,6 +39,7 @@ RDMAConnectedSocketImpl::RDMAConnectedSocketImpl(CephContext *cct, Infiniband* i
 
 RDMAConnectedSocketImpl::~RDMAConnectedSocketImpl()
 {
+  ldout(cct, 20) << __func__ << " destruct." << dendl;
   worker->remove_pending_conn(this);
   dispatcher->erase_qpn(my_msg.qpn);
   cleanup();
@@ -309,7 +310,7 @@ ssize_t RDMAConnectedSocketImpl::read_buffers(char* buf, size_t len)
   }
 
   if (c != buffers.end() && (*c)->over())
-    c++;
+    ++c;
   buffers.erase(buffers.begin(), c);
   ldout(cct, 25) << __func__ << " got " << read  << " bytes, buffers size: " << buffers.size() << dendl;
   return read;

@@ -579,9 +579,11 @@ that use Cephs distributed file system.
 Summary:	Python 2 libraries for Ceph distributed file system
 Group:		System Environment/Libraries
 License:	LGPL-2.0
-Requires:	libcephfs2 = %{version}-%{release}
-Requires:	python-rados = %{version}-%{release}
-Obsoletes:	python-ceph < %{version}-%{release}
+Requires:	libcephfs2 = %{epoch}:%{version}-%{release}
+%if 0%{?suse_version}
+Recommends: python-rados = %{epoch}:%{version}-%{release}
+%endif
+Obsoletes:	python-ceph < %{epoch}:%{version}-%{release}
 %description -n python-cephfs
 This package contains Python 2 libraries for interacting with Cephs distributed
 file system.
