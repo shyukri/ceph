@@ -38,7 +38,7 @@ class DeepSea(Task):
 
         self.log.info("master remote: {}".format(self.config["master_remote"]))
 
-        self.ctx.cluster.only(lambda role: role.startswith("master")).run(args=[
+        self.salt.master_remote.run(args=[
             'git',
             'clone',
             'https://github.com/SUSE/DeepSea.git',
@@ -48,12 +48,20 @@ class DeepSea(Task):
             run.Raw(';'),
             'sudo',
             'make',
-            'install'
+            'install',
+            run.Raw(';'),
+            'sudo',
+            'chown',
+            '-R',
+            'salt',
+            '/srv/pillar/ceph/'
             ])
 
-        self.salt.init_minions()
-        self.salt.start_master()
-        self.salt.start_minions()
+        self.salt.master_remote.run(args = ['sudo', 'sed', '-i',
+            's/_REPLACE_ME_/{}/'.format(self.salt.master_remote.shortname),
+            '/srv/pillar/ceph/master_minion.sls'])
+
+        self.salt.ping_minions()
 
     def begin(self):
         super(DeepSea, self).begin()
@@ -63,25 +71,91 @@ class DeepSea(Task):
         super(DeepSea, self).end()
 
     def test_stage_1_to_3(self):
-        self._emulate_stage_0()
+        self.__emulate_stage_0()
         self.__stage1()
-        # self.__stage2()
-        # self.__stage3()
-        # self.__is_cluster_healthy()
+        self.__map_roles_to_policy_cfg()
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'cat',
+            '/srv/pillar/ceph/proposals/policy.cfg'
+            ])
+        self.__stage2()
+        self.__add_public_interfaces()
+        self.__stage3()
+        wait_until_healthy(self.ctx, self.salt.master_remote)
 
     def __emulate_stage_0(self):
         '''
         stage 0 might reboot nodes. To avoid this for now lets emulate most parts of
         it
         '''
+        # TODO target only G@job_id: $job_id
         self.salt.master_remote.run(args = [
-            'sudo', 'salt', '*', 'ceph.sync',
-            'sudo', 'salt', '*', 'ceph.mines',
-            'sudo', 'salt', '*', 'ceph.packages.common',
-            ])
+            'sudo', 'salt', '*', 'state.apply', 'ceph.sync',
+            run.Raw(';'),
+            'sudo', 'salt', '*', 'state.apply', 'ceph.mines',
+            run.Raw(';'),
+            'sudo', 'salt', '*', 'state.apply', 'ceph.packages.common',
+            # don't check status...returns 11 despite seeming to succeed
+            ], check_status = False)
 
     def __stage1(self):
         self.salt.master_remote.run(args = [
             'sudo', 'salt-run', 'state.orch', 'ceph.stage.1'])
+
+    def __stage2(self):
+        self.salt.master_remote.run(args = [
+            'sudo', 'salt-run', 'state.orch', 'ceph.stage.2'])
+
+    def __stage3(self):
+        self.salt.master_remote.run(args = [
+            'sudo', 'salt-run', 'state.orch', 'ceph.stage.3'])
+
+    def __map_roles_to_policy_cfg(self):
+        # TODO this should probably happen in a random tmp dir...look in misc
+        policy_cfg = "/tmp/policy.cfg"
+        misc.sh('echo "cluster-ceph/cluster/*.sls\n\
+config/stack/default/global.yml\n\
+config/stack/default/ceph/cluster.yml" > {}'.format(policy_cfg)
+                )
+        for _remote, roles_for_host in self.ctx.cluster.remotes.iteritems():
+            nodename = _remote.shortname
+            for role in roles_for_host:
+                if(role.startswith('osd')):
+                    log.debug('{} will be an OSD'.format(nodename))
+                    misc.sh('echo "profile-*-1/cluster/{}.sls" >> {}'.format(nodename, policy_cfg))
+                    misc.sh('echo "profile-*-1/stack/default/ceph/minions/{}.yml" >> {}'.format(nodename, policy_cfg))
+                if(role.startswith('mon')):
+                    log.debug('{} will be a MON'.format(nodename))
+                    misc.sh('echo "role-admin/cluster/{}.sls" >> {}'.format(nodename, policy_cfg))
+                    misc.sh('echo "role-mon/cluster/{}.sls" >> {}'.format(nodename, policy_cfg))
+                    misc.sh('echo "role-mon/stack/default/ceph/minions/{}.yml" >> /tmp/policy.cfg'.format(nodename, policy_cfg))
+        misc.sh('scp {} {}:'.format(policy_cfg, self.salt.master_remote.name))
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'mv',
+            'policy.cfg',
+            '/srv/pillar/ceph/proposals/policy.cfg'
+            ])
+
+    def __add_public_interfaces(self):
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'ls',
+            '-lisa',
+            '/srv/pillar/ceph/stack/ceph/minions'
+            ])
+        for remote, roles_for_host in self.ctx.cluster.remotes.iteritems():
+            nodename = remote.shortname
+            for role in roles_for_host:
+                if(role.startswith('mon')):
+                    self.salt.master_remote.run(args = [
+                        'sudo',
+                        'sh',
+                        '-c',
+                        'echo "roles: \n- mon\npublic_interface: {}" >> \
+                         /srv/pillar/ceph/stack/ceph/minions/{}.yml'.format(remote.ip_address,
+                             nodename),
+                        ])
 
 task = DeepSea
