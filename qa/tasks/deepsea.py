@@ -41,10 +41,16 @@ class DeepSea(Task):
         self.salt.master_remote.run(args=[
             'git',
             'clone',
-            'https://github.com/SUSE/DeepSea.git',
+            'https://github.com/rjfd/DeepSea.git',
+            # 'https://github.com/SUSE/DeepSea.git',
             run.Raw(';'),
             'cd',
             'DeepSea',
+            run.Raw(';'),
+            'git',
+            'checkout',
+            'wip-public-networks',
+            # 'master',
             run.Raw(';'),
             'sudo',
             'make',
@@ -79,10 +85,37 @@ class DeepSea(Task):
             'cat',
             '/srv/pillar/ceph/proposals/policy.cfg'
             ])
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'cat',
+            '/srv/pillar/ceph/proposals/config/stack/default/ceph/cluster.yml'
+            ])
         self.__stage2()
         self.__add_public_interfaces()
+        self.__stage2()
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'salt',
+            self.salt.master_remote.shortname,
+            'pillar.items'
+            ])
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'cat',
+            '/srv/pillar/ceph/stack/default/ceph/cluster.yml'
+            ])
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'cat',
+            '/srv/pillar/ceph/stack/default/ceph/ceph_conf.yml'
+            ])
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'cat',
+            '/srv/pillar/ceph/stack/ceph/ceph_conf.yml'
+            ])
         self.__stage3()
-        wait_until_healthy(self.ctx, self.salt.master_remote)
+        misc.wait_until_healthy(self.ctx, self.salt.master_remote)
 
     def __emulate_stage_0(self):
         '''
@@ -116,7 +149,8 @@ class DeepSea(Task):
         policy_cfg = "/tmp/policy.cfg"
         misc.sh('echo "cluster-ceph/cluster/*.sls\n\
 config/stack/default/global.yml\n\
-config/stack/default/ceph/cluster.yml" > {}'.format(policy_cfg)
+config/stack/default/ceph/cluster.yml\n\
+role-master/cluster/{}.sls" > {}'.format(self.salt.master_remote.shortname, policy_cfg)
                 )
         for _remote, roles_for_host in self.ctx.cluster.remotes.iteritems():
             nodename = _remote.shortname
@@ -145,6 +179,13 @@ config/stack/default/ceph/cluster.yml" > {}'.format(policy_cfg)
             '-lisa',
             '/srv/pillar/ceph/stack/ceph/minions'
             ])
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'sh',
+            '-c',
+            'echo "mon_host:" > \
+                    /srv/pillar/ceph/stack/ceph/ceph_conf.yml'
+            ])
         for remote, roles_for_host in self.ctx.cluster.remotes.iteritems():
             nodename = remote.shortname
             for role in roles_for_host:
@@ -153,9 +194,10 @@ config/stack/default/ceph/cluster.yml" > {}'.format(policy_cfg)
                         'sudo',
                         'sh',
                         '-c',
-                        'echo "roles: \n- mon\npublic_interface: {}" >> \
-                         /srv/pillar/ceph/stack/ceph/minions/{}.yml'.format(remote.ip_address,
-                             nodename),
+                        'echo "public_interface: {ip}" >> \
+                         /srv/pillar/ceph/stack/ceph/minions/{n}.yml;\
+                         echo "- \'{ip}\'" >> /srv/pillar/ceph/stack/ceph/ceph_conf.yml'.format(ip = remote.ip_address,
+                             n = nodename),
                         ])
 
 task = DeepSea
