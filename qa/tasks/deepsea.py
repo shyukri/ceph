@@ -41,16 +41,14 @@ class DeepSea(Task):
         self.salt.master_remote.run(args=[
             'git',
             'clone',
-            'https://github.com/rjfd/DeepSea.git',
-            # 'https://github.com/SUSE/DeepSea.git',
+            'https://github.com/SUSE/DeepSea.git',
             run.Raw(';'),
             'cd',
             'DeepSea',
             run.Raw(';'),
             'git',
             'checkout',
-            'wip-public-networks',
-            # 'master',
+            'master',
             run.Raw(';'),
             'sudo',
             'make',
@@ -64,7 +62,7 @@ class DeepSea(Task):
             ])
 
         self.salt.master_remote.run(args = ['sudo', 'sed', '-i',
-            's/_REPLACE_ME_/{}/'.format(self.salt.master_remote.shortname),
+            's/_REPLACE_ME_/{}/'.format(self.salt.master_remote.hostname),
             '/srv/pillar/ceph/master_minion.sls'])
 
         self.salt.ping_minions()
@@ -96,7 +94,7 @@ class DeepSea(Task):
         self.salt.master_remote.run(args = [
             'sudo',
             'salt',
-            self.salt.master_remote.shortname,
+            self.salt.master_remote.hostname,
             'pillar.items'
             ])
         self.salt.master_remote.run(args = [
@@ -150,10 +148,10 @@ class DeepSea(Task):
         misc.sh('echo "cluster-ceph/cluster/*.sls\n\
 config/stack/default/global.yml\n\
 config/stack/default/ceph/cluster.yml\n\
-role-master/cluster/{}.sls" > {}'.format(self.salt.master_remote.shortname, policy_cfg)
+role-master/cluster/{}.sls" > {}'.format(self.salt.master_remote.hostname, policy_cfg)
                 )
         for _remote, roles_for_host in self.ctx.cluster.remotes.iteritems():
-            nodename = _remote.shortname
+            nodename = _remote.hostname
             for role in roles_for_host:
                 if(role.startswith('osd')):
                     log.debug('{} will be an OSD'.format(nodename))
@@ -187,7 +185,7 @@ role-master/cluster/{}.sls" > {}'.format(self.salt.master_remote.shortname, poli
                     /srv/pillar/ceph/stack/ceph/ceph_conf.yml'
             ])
         for remote, roles_for_host in self.ctx.cluster.remotes.iteritems():
-            nodename = remote.shortname
+            nodename = remote.hostname
             for role in roles_for_host:
                 if(role.startswith('mon')):
                     self.salt.master_remote.run(args = [
