@@ -7,6 +7,10 @@ roles:
 - - osd.3
   - mon.c
 - - osd.4
+openstack:
+  - volumes:
+      count: 1
+      size: 50 # GB
 tasks:
 - deepsea:
     master: master.1
