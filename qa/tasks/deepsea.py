@@ -18,9 +18,8 @@ class DeepSea(Task):
 
     def __init__(self, ctx, config):
         super(DeepSea, self).__init__(ctx, config)
-        try:
-            self.master = self.config['master']
-        except KeyError:
+
+        if(misc.num_instances_of_type(self.cluster, 'master') == 0):
             raise ConfigError('deepsea requires a master role')
 
         # set remote name for salt to pick it up. Setting the remote itself will
@@ -28,17 +27,11 @@ class DeepSea(Task):
         # into a string
 
         self.config["master_remote"] = get_remote_for_role(self.ctx,
-                self.master).name
+                'master.1').name
         self.salt = Salt(self.ctx, self.config)
 
     def setup(self):
         super(DeepSea, self).setup()
-
-        self.cluster_name, type_, self.master_id = misc.split_role(self.master)
-
-        if type_ != 'master':
-            msg = 'master role ({0}) must be a master'.format(self.master)
-            raise ConfigError(msg)
 
         self.log.info("master remote: {}".format(self.config["master_remote"]))
 
@@ -58,6 +51,17 @@ class DeepSea(Task):
             'make',
             'install',
             ])
+
+        self.log.info("installing deepsea dependencies...")
+        self.salt.master_remote.run(args = [
+            'sudo',
+            'zypper',
+            '--non-interactive',
+            'install',
+            run.Raw('$(rpmspec --requires -q -v DeepSea/deepsea.spec | grep manual | awk \'{print $2}\')')
+            ])
+        # install requires for deepsea
+        # rpmspec --requires -q -v deepsea.spec | grep manual | awk '{print $2}'
 
         self.salt.master_remote.run(args = ['sudo', 'salt-key', '-L'])
 
@@ -115,11 +119,6 @@ class DeepSea(Task):
             'cat',
             '/srv/pillar/ceph/stack/default/ceph/ceph_conf.yml'
             ])
-        self.salt.master_remote.run(args = [
-            'sudo',
-            'cat',
-            '/srv/pillar/ceph/stack/ceph/ceph_conf.yml'
-            ])
         self.__stage3()
         self.salt.master_remote.run(args = [
             'sudo',
@@ -166,13 +165,13 @@ class DeepSea(Task):
             for role in roles_for_host:
                 if(role.startswith('osd')):
                     log.debug('{} will be an OSD'.format(nodename))
-                    policy_cfg.append('echo "profile-*-1/cluster/{}.sls'.format(nodename))
-                    policy_cfg.append('echo "profile-*-1/stack/default/ceph/minions/{}.yml'.format(nodename))
+                    policy_cfg.append('profile-*-1/cluster/{}.sls'.format(nodename))
+                    policy_cfg.append('profile-*-1/stack/default/ceph/minions/{}.yml'.format(nodename))
                 if(role.startswith('mon')):
                     log.debug('{} will be a MON'.format(nodename))
-                    policy_cfg.append('echo "role-admin/cluster/{}.sls'.format(nodename))
-                    policy_cfg.append('echo "role-mon/cluster/{}.sls'.format(nodename))
-                    policy_cfg.append('echo "role-mon/stack/default/ceph/minions/{}.yml'.format(nodename))
+                    policy_cfg.append('role-admin/cluster/{}.sls'.format(nodename))
+                    policy_cfg.append('role-mon/cluster/{}.sls'.format(nodename))
+                    policy_cfg.append('role-mon/stack/default/ceph/minions/{}.yml'.format(nodename))
         misc.sudo_write_file(self.salt.master_remote,
                 '/srv/pillar/ceph/proposals/policy.cfg', '\n'.join(policy_cfg))
 

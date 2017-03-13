@@ -11,6 +11,6 @@ openstack:
   - volumes:
       count: 1
       size: 50 # GB
+ceph_cm: salt
 tasks:
 - deepsea:
-    master: master.1
