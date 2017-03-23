@@ -40,4 +40,18 @@ ceph:
   - librbd1
   - python-ceph
   - rbd-fuse
-  - ceph-debuginfo
+  - ceph-common-debuginfo
+  - ceph-fuse-debuginfo
+  - ceph-mds-debuginfo
+  - ceph-mon-debuginfo
+  - ceph-osd-debuginfo
+  - ceph-test-debuginfo
+  - libcephfs1-debuginfo
+  - librados2-debuginfo
+  - libradosstriper1-debuginfo
+  - librbd1-debuginfo
+  - librgw2-debuginfo
+  - radosgw-debuginfo
+  - rbd-fuse-debuginfo
+  - rbd-mirror-debuginfo
+  - rbd-nbd-debuginfo
