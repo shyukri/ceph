@@ -13,4 +13,5 @@ openstack:
       size: 50 # GB
 ceph_cm: salt
 tasks:
-- deepsea:
+- install: null
+- deepsea: null
