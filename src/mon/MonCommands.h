@@ -29,7 +29,7 @@
  * helpstring: displays in CLI help, API help (nice if it refers to
  *             parameter names from signature, 40-a few hundred chars)
  * modulename: the monitor module or daemon this applies to:
- *             mds, osd, pg (osd), mon, auth, log, config-key
+ *             mds, osd, pg (osd), mon, auth, log, config-key, mgr
  * req perms:  required permission in that modulename space to execute command
  *             this also controls what type of REST command is accepted
  * availability: cli, rest, or both
@@ -512,6 +512,12 @@ COMMAND("osd crush move " \
 	"name=args,type=CephString,n=N,goodchars=[A-Za-z0-9-_.=]", \
 	"move existing entry for <name> to location <args>", \
 	"osd", "rw", "cli,rest")
+COMMAND("osd crush swap-bucket " \
+	"name=source,type=CephString,goodchars=[A-Za-z0-9-_.] " \
+	"name=dest,type=CephString,goodchars=[A-Za-z0-9-_.] " \
+	"name=force,type=CephChoices,strings=--yes-i-really-mean-it,req=false", \
+	"swap existing bucket contents from (orphan) bucket <source> and <target>", \
+	"osd", "rw", "cli,rest")
 COMMAND("osd crush link " \
 	"name=name,type=CephString " \
 	"name=args,type=CephString,n=N,goodchars=[A-Za-z0-9-_.=]", \
@@ -834,5 +840,9 @@ COMMAND("config-key dump", "dump keys and values", "config-key", "r", "cli,rest"
 /*
  * mon/MgrMonitor.cc
  */
+COMMAND("mgr dump "				     \
+	"name=epoch,type=CephInt,range=0,req=false", \
+	"dump the latest MgrMap",		     \
+	"mgr", "rw", "cli,rest")
 COMMAND("mgr fail name=who,type=CephString", \
 	"treat the named manager daemon as failed", "mgr", "rw", "cli,rest")

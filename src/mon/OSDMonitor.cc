@@ -256,6 +256,15 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
   dout(15) << "update_from_paxos paxos e " << version
 	   << ", my e " << osdmap.epoch << dendl;
 
+  if (mapping_job) {
+    if (!mapping_job->is_done()) {
+      dout(1) << __func__ << " mapping job "
+	      << mapping_job.get() << " did not complete, "
+	      << mapping_job->shards << " left, canceling" << dendl;
+      mapping_job->abort();
+    }
+    mapping_job.reset();
+  }
 
   /*
    * We will possibly have a stashed latest that *we* wrote, and we will
@@ -3481,40 +3490,144 @@ void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
     int num_in_osds = 0;
     int num_down_in_osds = 0;
     set<int> osds;
+    set<int> down_in_osds;
+    set<int> up_in_osds;
+    set<int> subtree_up;
+    unordered_map<int, set<int> > subtree_type_down;
+    unordered_map<int, int> num_osds_subtree;
+    int max_type = osdmap.crush->get_max_type_id();
+
     for (int i = 0; i < osdmap.get_max_osd(); i++) {
       if (!osdmap.exists(i)) {
         if (osdmap.crush->item_exists(i)) {
           osds.insert(i);
         }
-	 continue;
+	continue;
       } 
       if (osdmap.is_out(i))
         continue;
       ++num_in_osds;
+      if (down_in_osds.count(i) || up_in_osds.count(i))
+	continue;
       if (!osdmap.is_up(i)) {
-	++num_down_in_osds;
-	if (detail) {
-	  const osd_info_t& info = osdmap.get_info(i);
+	down_in_osds.insert(i);
+	int parent_id = 0;
+	int current = i;
+	for (int type = 0; type <= max_type; type++) {
+	  if (!osdmap.crush->get_type_name(type))
+	    continue;
+	  int r = osdmap.crush->get_immediate_parent_id(current, &parent_id);
+	  if (r == -ENOENT)
+	    break;
+	  // break early if this parent is already marked as up
+	  if (subtree_up.count(parent_id))
+	    break;
+	  type = osdmap.crush->get_bucket_type(parent_id);
+	  if (!osdmap.subtree_type_is_down(
+		g_ceph_context, parent_id, type,
+		&down_in_osds, &up_in_osds, &subtree_up, &subtree_type_down))
+	    break;
+	  current = parent_id;
+	}
+      }
+    }
+
+    // calculate the number of down osds in each down subtree and
+    // store it in num_osds_subtree
+    for (int type = 1; type <= max_type; type++) {
+      if (!osdmap.crush->get_type_name(type))
+	continue;
+      for (auto j = subtree_type_down[type].begin();
+	   j != subtree_type_down[type].end();
+	   ++j) {
+	if (type == 1) {
+          list<int> children;
+          int num = osdmap.crush->get_children(*j, &children);
+          num_osds_subtree[*j] = num;
+        } else {
+          list<int> children;
+          int num = 0;
+          int num_children = osdmap.crush->get_children(*j, &children);
+          if (num_children == 0)
+	    continue;
+          for (auto l = children.begin(); l != children.end(); ++l) {
+            if (num_osds_subtree[*l] > 0) {
+              num = num + num_osds_subtree[*l];
+            }
+          }
+          num_osds_subtree[*j] = num;
+	}
+      }
+    }
+    num_down_in_osds = down_in_osds.size();
+    assert(num_down_in_osds <= num_in_osds);
+    if (num_down_in_osds > 0) {
+      // summary of down subtree types and osds
+      for (int type = max_type; type > 0; type--) {
+	if (!osdmap.crush->get_type_name(type))
+	  continue;
+	if (subtree_type_down[type].size() > 0) {
 	  ostringstream ss;
-	  ss << "osd." << i << " is down since epoch " << info.down_at
-	     << ", last address " << osdmap.get_addr(i);
+	  ss << subtree_type_down[type].size() << " "
+	     << osdmap.crush->get_type_name(type);
+	  if (subtree_type_down[type].size() > 1) {
+	    ss << "s";
+	  }
+	  int sum_down_osds = 0;
+	  for (auto j = subtree_type_down[type].begin();
+	       j != subtree_type_down[type].end();
+	       ++j) {
+	    sum_down_osds = sum_down_osds + num_osds_subtree[*j];
+	  }
+          ss << " (" << sum_down_osds << " osds) down";
+	  summary.push_back(make_pair(HEALTH_WARN, ss.str()));
+	}
+      }
+      ostringstream ss;
+      ss << down_in_osds.size() << " osds down";
+      summary.push_back(make_pair(HEALTH_WARN, ss.str()));
+
+      if (detail) {
+	// details of down subtree types
+	for (int type = max_type; type > 0; type--) {
+	  if (!osdmap.crush->get_type_name(type))
+	    continue;
+	  for (auto j = subtree_type_down[type].rbegin();
+	       j != subtree_type_down[type].rend();
+	       ++j) {
+	    ostringstream ss;
+	    ss << osdmap.crush->get_type_name(type);
+	    ss << " ";
+	    ss << osdmap.crush->get_item_name(*j);
+	    // at the top level, do not print location
+	    if (type != max_type) {
+              ss << " (";
+              ss << osdmap.crush->get_full_location_ordered_string(*j);
+              ss << ")";
+	    }
+	    int num = num_osds_subtree[*j];
+	    ss << " (" << num << " osds)";
+	    ss << " is down";
+	    detail->push_back(make_pair(HEALTH_WARN, ss.str()));
+	  }
+        }
+	// details of down osds
+	for (auto it = down_in_osds.begin(); it != down_in_osds.end(); ++it) {
+	  ostringstream ss;
+	  ss << "osd." << *it << " (";
+	  ss << osdmap.crush->get_full_location_ordered_string(*it);
+          ss << ") is down";
 	  detail->push_back(make_pair(HEALTH_WARN, ss.str()));
 	}
       }
     }
-    assert(num_down_in_osds <= num_in_osds);
-    if (num_down_in_osds > 0) {
-      ostringstream ss;
-      ss << num_down_in_osds << "/" << num_in_osds << " in osds are down";
-      summary.push_back(make_pair(HEALTH_WARN, ss.str()));
-    }
 
     if (!osds.empty()) {
       ostringstream ss;
-      ss << "osds were removed from osdmap, but still kept in crushmap";
+      ss << osds.size() << " osds exist in the crush map but not in the osdmap";
       summary.push_back(make_pair(HEALTH_WARN, ss.str()));
       if (detail) {
-        ss << " osds: [" << osds << "]";
+        ss << " (osds: " << osds << ")";
         detail->push_back(make_pair(HEALTH_WARN, ss.str()));
       }
     }
@@ -5994,7 +6107,8 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
       return -EINVAL;
     }
     stringstream err;
-    if (!is_pool_currently_all_bluestore(pool, p, &err)) {
+    if (!g_conf->mon_debug_no_require_bluestore_for_ec_overwrites &&
+	!is_pool_currently_all_bluestore(pool, p, &err)) {
       ss << "pool must only be stored on bluestore for scrubbing to work: " << err.str();
       return -EINVAL;
     }
@@ -6685,7 +6799,52 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 	err = 0;
       }
     } while (false);
-
+  } else if (prefix == "osd crush swap-bucket") {
+    string source, dest, force;
+    cmd_getval(g_ceph_context, cmdmap, "source", source);
+    cmd_getval(g_ceph_context, cmdmap, "dest", dest);
+    cmd_getval(g_ceph_context, cmdmap, "force", force);
+    CrushWrapper newcrush;
+    _get_pending_crush(newcrush);
+    if (!newcrush.name_exists(source)) {
+      ss << "source item " << source << " does not exist";
+      err = -ENOENT;
+      goto reply;
+    }
+    if (!newcrush.name_exists(dest)) {
+      ss << "dest item " << dest << " does not exist";
+      err = -ENOENT;
+      goto reply;
+    }
+    int sid = newcrush.get_item_id(source);
+    int did = newcrush.get_item_id(dest);
+    int sparent;
+    if (newcrush.get_immediate_parent_id(sid, &sparent) == 0 &&
+	force != "--yes-i-really-mean-it") {
+      ss << "source item " << source << " is not an orphan bucket; pass --yes-i-really-mean-it to proceed anyway";
+      err = -EPERM;
+      goto reply;
+    }
+    if (newcrush.get_bucket_alg(sid) != newcrush.get_bucket_alg(did) &&
+	force != "--yes-i-really-mean-it") {
+      ss << "source bucket alg " << crush_alg_name(newcrush.get_bucket_alg(sid)) << " != "
+	 << "dest bucket alg " << crush_alg_name(newcrush.get_bucket_alg(did))
+	 << "; pass --yes-i-really-mean-it to proceed anyway";
+      err = -EPERM;
+      goto reply;
+    }
+    int r = newcrush.swap_bucket(g_ceph_context, sid, did);
+    if (r < 0) {
+      ss << "failed to swap bucket contents: " << cpp_strerror(r);
+      goto reply;
+    }
+    ss << "swapped bucket of " << source << " to " << dest;
+    pending_inc.crush.clear();
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
+    wait_for_finished_proposal(op,
+			       new Monitor::C_Command(mon, op, err, ss.str(),
+						      get_last_committed() + 1));
+    return true;
   } else if (prefix == "osd crush link") {
     // osd crush link <name> <loc1> [<loc2> ...]
     string name;
@@ -7711,11 +7870,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       err = -EINVAL;
       goto reply;
     }
-    if (!osdmap.pg_exists(pgid)) {
-      ss << "pg " << pgid << " does not exist";
-      err = -ENOENT;
-      goto reply;
-    }
     if (pending_inc.new_pg_upmap.count(pgid) ||
 	pending_inc.old_pg_upmap.count(pgid)) {
       dout(10) << __func__ << " waiting for pending update on " << pgid << dendl;
@@ -7829,11 +7983,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     if (!pgid.parse(pgidstr.c_str())) {
       ss << "invalid pgid '" << pgidstr << "'";
       err = -EINVAL;
-      goto reply;
-    }
-    if (!osdmap.pg_exists(pgid)) {
-      ss << "pg " << pgid << " does not exist";
-      err = -ENOENT;
       goto reply;
     }
     if (pending_inc.new_pg_upmap_items.count(pgid) ||

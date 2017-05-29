@@ -105,11 +105,10 @@ CHECK_FUNCTION_EXISTS(pthread_set_name_np HAVE_PTHREAD_SET_NAME_NP)
 CHECK_FUNCTION_EXISTS(pthread_setname_np HAVE_PTHREAD_SETNAME_NP)
 CHECK_FUNCTION_EXISTS(pthread_getname_np HAVE_PTHREAD_GETNAME_NP)
 CHECK_FUNCTION_EXISTS(eventfd HAVE_EVENTFD)
+CHECK_FUNCTION_EXISTS(getprogname HAVE_GETPROGNAME)
 
-CHECK_INCLUDE_FILES("inttypes.h" HAVE_INTTYPES_H)
 CHECK_INCLUDE_FILES("linux/types.h" HAVE_LINUX_TYPES_H)
 CHECK_INCLUDE_FILES("linux/version.h" HAVE_LINUX_VERSION_H)
-CHECK_INCLUDE_FILES("stdint.h" HAVE_STDINT_H)
 CHECK_INCLUDE_FILES("arpa/nameser_compat.h" HAVE_ARPA_NAMESER_COMPAT_H)
 CHECK_INCLUDE_FILES("sys/mount.h" HAVE_SYS_MOUNT_H)
 CHECK_INCLUDE_FILES("sys/param.h" HAVE_SYS_PARAM_H)
@@ -437,6 +436,8 @@ if(${WITH_LTTNG})
   endif()
 endif(${WITH_LTTNG})
 
+option(WITH_OSD_INSTRUMENT_FUNCTIONS OFF)
+
 #option for Babeltrace
 option(HAVE_BABELTRACE "Babeltrace libraries are enabled" ON)
 if(${HAVE_BABELTRACE})
@@ -514,7 +515,7 @@ endif()
 option(WITH_SYSTEM_BOOST "require and build with system Boost" OFF)
 
 set(BOOST_COMPONENTS
-	thread system regex random program_options date_time iostreams coroutine)
+	thread system regex random program_options date_time iostreams)
 set(BOOST_HEADER_COMPONENTS container)
 
 if(WITH_MGR)
@@ -522,7 +523,7 @@ if(WITH_MGR)
 endif()
 
 if(WITH_RADOSGW_BEAST_FRONTEND)
-	list(APPEND BOOST_COMPONENTS context)
+	list(APPEND BOOST_COMPONENTS coroutine context)
 endif()
 
 if (WITH_SYSTEM_BOOST)
