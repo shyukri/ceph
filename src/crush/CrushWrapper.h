@@ -316,8 +316,8 @@ public:
   bool has_v3_rules() const;
   bool has_v4_buckets() const;
   bool has_v5_rules() const;
-  bool has_chooseargs() const;          // any chooseargs
-  bool has_incompat_chooseargs() const; // chooseargs that can't be made compat
+  bool has_choose_args() const;          // any choose_args
+  bool has_incompat_choose_args() const; // choose_args that can't be made compat
 
   bool is_v2_rule(unsigned ruleid) const;
   bool is_v3_rule(unsigned ruleid) const;
@@ -401,6 +401,16 @@ public:
     if (have_rmaps)
       name_rmap[name] = i;
     return 0;
+  }
+  void swap_names(int a, int b) {
+    string an = name_map[a];
+    string bn = name_map[b];
+    name_map[a] = bn;
+    name_map[b] = an;
+    if (have_rmaps) {
+      name_rmap[an] = b;
+      name_rmap[bn] = a;
+    }
   }
   bool id_has_class(int i) {
     int idout;
@@ -574,6 +584,12 @@ public:
   int get_immediate_parent_id(int id, int *parent) const;
 
   /**
+   * return ancestor of the given type, or 0 if none
+   * (parent is always a bucket and thus <0)
+   */
+  int get_parent_of_type(int id, int type) const;
+
+  /**
    * get the fully qualified location of a device by successively finding
    * parents beginning at ID and ending at highest type number specified in
    * the CRUSH map which assumes that if device foo is under device bar, the
@@ -650,6 +666,16 @@ public:
    * @return 0 for success, negative on error
    */
   int move_bucket(CephContext *cct, int id, const map<string,string>& loc);
+
+  /**
+   * swap bucket contents of two buckets without touching bucket ids
+   *
+   * @param cct cct
+   * @param src bucket a
+   * @param dst bucket b
+   * @return 0 for success, negative on error
+   */
+  int swap_bucket(CephContext *cct, int src, int dst);
 
   /**
    * add a link to an existing bucket in the hierarchy to the new location

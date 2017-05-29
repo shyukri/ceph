@@ -1166,8 +1166,8 @@ uint64_t OSDMap::get_features(int entity_type, uint64_t *pmask) const
     features |= CEPH_FEATURE_CRUSH_V4;
   if (crush->has_nondefault_tunables5())
     features |= CEPH_FEATURE_CRUSH_TUNABLES5;
-  if (crush->has_incompat_chooseargs())
-    features |= CEPH_FEATURE_CRUSH_CHOOSEARGS;
+  if (crush->has_incompat_choose_args())
+    features |= CEPH_FEATURE_CRUSH_CHOOSE_ARGS;
   mask |= CEPH_FEATURES_CRUSH;
 
   if (!pg_upmap.empty() || !pg_upmap_items.empty())
@@ -1249,7 +1249,7 @@ pair<string,string> OSDMap::get_min_compat_client() const
   uint64_t f = get_features(CEPH_ENTITY_TYPE_CLIENT, nullptr);
 
   if (HAVE_FEATURE(f, OSDMAP_PG_UPMAP) ||      // v12.0.0-1733-g27d6f43
-      HAVE_FEATURE(f, CRUSH_CHOOSEARGS)) {     // v12.0.1-2172-gef1ef28
+      HAVE_FEATURE(f, CRUSH_CHOOSE_ARGS)) {     // v12.0.1-2172-gef1ef28
     return make_pair("luminous", "12.2.0");
   }
   if (HAVE_FEATURE(f, CRUSH_TUNABLES5)) {      // v10.0.0-612-g043a737
@@ -3456,17 +3456,27 @@ bool OSDMap::try_pg_upmap(
 
 int OSDMap::calc_pg_upmaps(
   CephContext *cct,
-  float max_deviation,
+  float max_deviation_ratio,
   int max,
-  const set<int64_t>& only_pools,
+  const set<int64_t>& only_pools_orig,
   OSDMap::Incremental *pending_inc)
 {
+  set<int64_t> only_pools;
+  if (only_pools_orig.empty()) {
+    for (auto& i : pools) {
+      only_pools.insert(i.first);
+    }
+  } else {
+    only_pools = only_pools_orig;
+  }
   OSDMap tmp;
   tmp.deepish_copy_from(*this);
   int num_changed = 0;
   while (true) {
     map<int,set<pg_t>> pgs_by_osd;
     int total_pgs = 0;
+    float osd_weight_total = 0;
+    map<int,float> osd_weight;
     for (auto& i : pools) {
       if (!only_pools.empty() && !only_pools.count(i.first))
 	continue;
@@ -3480,18 +3490,29 @@ int OSDMap::calc_pg_upmaps(
 	}
       }
       total_pgs += i.second.get_size() * i.second.get_pg_num();
+
+      map<int,float> pmap;
+      int ruleno = tmp.crush->find_rule(i.second.get_crush_ruleset(),
+					i.second.get_type(),
+					i.second.get_size());
+      tmp.crush->get_rule_weight_osd_map(ruleno, &pmap);
+      ldout(cct,30) << __func__ << " pool " << i.first << " ruleno " << ruleno << dendl;
+      for (auto p : pmap) {
+	osd_weight[p.first] += p.second;
+	osd_weight_total += p.second;
+      }
     }
-    float osd_weight_total = 0;
-    map<int,float> osd_weight;
-    for (auto& i : pgs_by_osd) {
-      float w = crush->get_item_weightf(i.first);
-      osd_weight[i.first] = w;
-      osd_weight_total += w;
-      ldout(cct, 20) << " osd." << i.first << " weight " << w
-		     << " pgs " << i.second.size() << dendl;
+    for (auto& i : osd_weight) {
+      int pgs = 0;
+      auto p = pgs_by_osd.find(i.first);
+      if (p != pgs_by_osd.end())
+	pgs = p->second.size();
+      else
+	pgs_by_osd.emplace(i.first, set<pg_t>());
+      ldout(cct, 20) << " osd." << i.first << " weight " << i.second
+		     << " pgs " << pgs << dendl;
     }
 
-    // NOTE: we assume we touch all osds with CRUSH!
     float pgs_per_weight = total_pgs / osd_weight_total;
     ldout(cct, 10) << " osd_weight_total " << osd_weight_total << dendl;
     ldout(cct, 10) << " pgs_per_weight " << pgs_per_weight << dendl;
@@ -3510,7 +3531,7 @@ int OSDMap::calc_pg_upmaps(
 		     << dendl;
       osd_deviation[i.first] = deviation;
       deviation_osd.insert(make_pair(deviation, i.first));
-      if (deviation > 0)
+      if (deviation >= 1.0)
 	overfull.insert(i.first);
     }
 
@@ -3532,14 +3553,14 @@ int OSDMap::calc_pg_upmaps(
     bool restart = false;
     for (auto p = deviation_osd.rbegin(); p != deviation_osd.rend(); ++p) {
       int osd = p->second;
+      float deviation = p->first;
       float target = osd_weight[osd] * pgs_per_weight;
-      float deviation = deviation_osd.rbegin()->first;
-      if (deviation/target < max_deviation) {
+      if (deviation/target < max_deviation_ratio) {
 	ldout(cct, 10) << " osd." << osd
 		       << " target " << target
 		       << " deviation " << deviation
-		       << " -> " << deviation/target
-		       << " < max " << max_deviation << dendl;
+		       << " -> ratio " << deviation/target
+		       << " < max ratio " << max_deviation_ratio << dendl;
 	break;
       }
       int num_to_move = deviation;

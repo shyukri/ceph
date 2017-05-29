@@ -1150,6 +1150,8 @@ namespace rgw {
     int rc = write_finish(FLAG_LOCKED);
 
     flags &= ~FLAG_OPEN;
+    flags &= ~FLAG_STATELESS_OPEN;
+
     return rc;
   } /* RGWFileHandle::close */
 
@@ -1419,7 +1421,6 @@ int rgw_umount(struct rgw_fs *rgw_fs, uint32_t flags)
 {
   RGWLibFS *fs = static_cast<RGWLibFS*>(rgw_fs->fs_private);
   fs->close();
-  fs->rele();
   return 0;
 }
 

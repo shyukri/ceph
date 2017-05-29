@@ -337,8 +337,6 @@ OPTION(mon_max_log_epochs, OPT_INT, 500)
 OPTION(mon_max_mdsmap_epochs, OPT_INT, 500)
 OPTION(mon_max_osd, OPT_INT, 10000)
 OPTION(mon_probe_timeout, OPT_DOUBLE, 2.0)
-OPTION(mon_slurp_timeout, OPT_DOUBLE, 10.0)
-OPTION(mon_slurp_bytes, OPT_INT, 256*1024)    // limit size of slurp messages
 OPTION(mon_client_bytes, OPT_U64, 100ul << 20)  // client msg data allowed in memory (in bytes)
 OPTION(mon_mgr_proxy_client_bytes_ratio, OPT_FLOAT, .3) // ratio of mon_client_bytes that can be consumed by proxied mgr commands before we error out to client
 OPTION(mon_daemon_bytes, OPT_U64, 400ul << 20)  // mds, osd message memory cap (in bytes)
@@ -365,9 +363,6 @@ OPTION(mon_config_key_max_entry_size, OPT_INT, 4096) // max num bytes per config
 OPTION(mon_sync_timeout, OPT_DOUBLE, 60.0)
 OPTION(mon_sync_max_payload_size, OPT_U32, 1048576) // max size for a sync chunk payload (say, 1MB)
 OPTION(mon_sync_debug, OPT_BOOL, false) // enable sync-specific debug
-OPTION(mon_sync_debug_leader, OPT_INT, -1) // monitor to be used as the sync leader
-OPTION(mon_sync_debug_provider, OPT_INT, -1) // monitor to be used as the sync provider
-OPTION(mon_sync_debug_provider_fallback, OPT_INT, -1) // monitor to be used as fallback if sync provider fails
 OPTION(mon_inject_sync_get_chunk_delay, OPT_DOUBLE, 0)  // inject N second delay on each get_chunk request
 OPTION(mon_osd_min_down_reporters, OPT_INT, 2)   // number of OSDs from different subtrees who need to report a down OSD for it to count
 OPTION(mon_osd_reporter_subtree_level , OPT_STR, "host")   // in which level of parent bucket the reporters are counted
@@ -383,6 +378,7 @@ OPTION(mon_debug_dump_transactions, OPT_BOOL, false)
 OPTION(mon_debug_dump_json, OPT_BOOL, false)
 OPTION(mon_debug_dump_location, OPT_STR, "/var/log/ceph/$cluster-$name.tdump")
 OPTION(mon_debug_no_require_luminous, OPT_BOOL, false)
+OPTION(mon_debug_no_require_bluestore_for_ec_overwrites, OPT_BOOL, false)
 OPTION(mon_inject_transaction_delay_max, OPT_DOUBLE, 10.0)      // seconds
 OPTION(mon_inject_transaction_delay_probability, OPT_DOUBLE, 0) // range [0, 1]
 
@@ -1014,9 +1010,6 @@ OPTION(osd_max_omap_bytes_per_request, OPT_U64, 1<<30)
 
 OPTION(osd_objectstore, OPT_STR, "filestore")  // ObjectStore backend type
 OPTION(osd_objectstore_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
-// Override maintaining compatibility with older OSDs
-// Set to true for testing.  Users should NOT set this.
-OPTION(osd_debug_override_acting_compat, OPT_BOOL, false)
 OPTION(osd_objectstore_fuse, OPT_BOOL, false)
 
 OPTION(osd_bench_small_size_max_iops, OPT_U32, 100) // 100 IOPS

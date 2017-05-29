@@ -2104,12 +2104,15 @@ WRITE_CLASS_ENCODER(pg_hit_set_history_t)
  * history they need to worry about.
  */
 struct pg_history_t {
-  epoch_t epoch_created;       // epoch in which PG was created
+  epoch_t epoch_created;       // epoch in which *pg* was created (pool or pg)
+  epoch_t epoch_pool_created;  // epoch in which *pool* was created
+			       // (note: may be pg creation epoch for
+			       // pre-luminous clusters)
   epoch_t last_epoch_started;  // lower bound on last epoch started (anywhere, not necessarily locally)
   epoch_t last_interval_started; // first epoch of last_epoch_started interval
   epoch_t last_epoch_clean;    // lower bound on last epoch the PG was completely clean.
   epoch_t last_interval_clean; // first epoch of last_epoch_clean interval
-  epoch_t last_epoch_split;    // as parent
+  epoch_t last_epoch_split;    // as parent or child
   epoch_t last_epoch_marked_full;  // pool or cluster
   
   /**
@@ -2132,6 +2135,7 @@ struct pg_history_t {
   friend bool operator==(const pg_history_t& l, const pg_history_t& r) {
     return
       l.epoch_created == r.epoch_created &&
+      l.epoch_pool_created == r.epoch_pool_created &&
       l.last_epoch_started == r.last_epoch_started &&
       l.last_interval_started == r.last_interval_started &&
       l.last_epoch_clean == r.last_epoch_clean &&
@@ -2150,6 +2154,7 @@ struct pg_history_t {
 
   pg_history_t()
     : epoch_created(0),
+      epoch_pool_created(0),
       last_epoch_started(0),
       last_interval_started(0),
       last_epoch_clean(0),
@@ -2163,6 +2168,12 @@ struct pg_history_t {
     bool modified = false;
     if (epoch_created < other.epoch_created) {
       epoch_created = other.epoch_created;
+      modified = true;
+    }
+    if (epoch_pool_created < other.epoch_pool_created) {
+      // FIXME: for jewel compat only; this should either be 0 or always the
+      // same value across all pg instances.
+      epoch_pool_created = other.epoch_pool_created;
       modified = true;
     }
     if (last_epoch_started < other.last_epoch_started) {
@@ -2220,7 +2231,7 @@ struct pg_history_t {
 WRITE_CLASS_ENCODER(pg_history_t)
 
 inline ostream& operator<<(ostream& out, const pg_history_t& h) {
-  return out << "ec=" << h.epoch_created
+  return out << "ec=" << h.epoch_created << "/" << h.epoch_pool_created
 	     << " lis/c " << h.last_interval_started
 	     << "/" << h.last_interval_clean
 	     << " les/c/f " << h.last_epoch_started << "/" << h.last_epoch_clean
@@ -2739,7 +2750,8 @@ public:
   }
 
   void swap(PastIntervals &other) {
-    ::swap(other.past_intervals, past_intervals);
+    using std::swap;
+    swap(other.past_intervals, past_intervals);
   }
 
   /**
@@ -3131,9 +3143,10 @@ public:
   void swap(ObjectModDesc &other) {
     bl.swap(other.bl);
 
-    ::swap(other.can_local_rollback, can_local_rollback);
-    ::swap(other.rollback_info_completed, rollback_info_completed);
-    ::swap(other.max_required_version, max_required_version);
+    using std::swap;
+    swap(other.can_local_rollback, can_local_rollback);
+    swap(other.rollback_info_completed, rollback_info_completed);
+    swap(other.max_required_version, max_required_version);
   }
   void append_id(ModID id) {
     uint8_t _id(id);
@@ -3225,7 +3238,7 @@ public:
    * in the case that bl contains ptrs which point into a much larger
    * message buffer
    */
-  void trim_bl() {
+  void trim_bl() const {
     if (bl.length() > 0)
       bl.rebuild();
   }
@@ -3466,7 +3479,8 @@ public:
     while (true) {
       if (p == log.begin()) {
 	// yikes, the whole thing is divergent!
-	::swap(divergent, log);
+	using std::swap;
+	swap(divergent, log);
 	break;
       }
       --p;
@@ -3652,8 +3666,6 @@ public:
 
   template <typename missing_type>
   pg_missing_set(const missing_type &m) {
-    for (auto &&i: missing)
-      tracker.changed(i.first);
     missing = m.get_items();
     rmissing = m.get_rmissing();
     for (auto &&i: missing)
@@ -4705,9 +4717,10 @@ struct ScrubMap {
     objects.insert(r.objects.begin(), r.objects.end());
   }
   void swap(ScrubMap &r) {
-    ::swap(objects, r.objects);
-    ::swap(valid_through, r.valid_through);
-    ::swap(incr_since, r.incr_since);
+    using std::swap;
+    swap(objects, r.objects);
+    swap(valid_through, r.valid_through);
+    swap(incr_since, r.incr_since);
   }
 
   void encode(bufferlist& bl) const;
