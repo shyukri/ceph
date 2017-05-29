@@ -2781,7 +2781,7 @@ void OSD::create_logger()
   osd_plb.add_time_avg(
     l_osd_op_r_lat, "op_r_latency",
     "Latency of read operation (including queue time)");
-  osd_plb.add_histogram(
+  osd_plb.add_u64_counter_histogram(
     l_osd_op_r_lat_outb_hist, "op_r_latency_out_bytes_histogram",
     op_hist_x_axis_config, op_hist_y_axis_config,
     "Histogram of operation latency (including queue time) + data read");
@@ -2798,7 +2798,7 @@ void OSD::create_logger()
   osd_plb.add_time_avg(
     l_osd_op_w_lat,  "op_w_latency",
     "Latency of write operation (including queue time)");
-  osd_plb.add_histogram(
+  osd_plb.add_u64_counter_histogram(
     l_osd_op_w_lat_inb_hist, "op_w_latency_in_bytes_histogram",
     op_hist_x_axis_config, op_hist_y_axis_config,
     "Histogram of operation latency (including queue time) + data written");
@@ -2820,11 +2820,11 @@ void OSD::create_logger()
   osd_plb.add_time_avg(
     l_osd_op_rw_lat, "op_rw_latency",
     "Latency of read-modify-write operation (including queue time)");
-  osd_plb.add_histogram(
+  osd_plb.add_u64_counter_histogram(
     l_osd_op_rw_lat_inb_hist, "op_rw_latency_in_bytes_histogram",
     op_hist_x_axis_config, op_hist_y_axis_config,
     "Histogram of rw operation latency (including queue time) + data written");
-  osd_plb.add_histogram(
+  osd_plb.add_u64_counter_histogram(
     l_osd_op_rw_lat_outb_hist, "op_rw_latency_out_bytes_histogram",
     op_hist_x_axis_config, op_hist_y_axis_config,
     "Histogram of rw operation latency (including queue time) + data read");
@@ -4148,6 +4148,7 @@ void OSD::build_initial_pg_history(
 {
   dout(10) << __func__ << " " << pgid << " created " << created << dendl;
   h->epoch_created = created;
+  h->epoch_pool_created = created;
   h->same_interval_since = created;
   h->same_up_since = created;
   h->same_primary_since = created;
@@ -4290,7 +4291,7 @@ bool OSD::project_pg_history(spg_t pgid, pg_history_t& h, epoch_t from,
       break;
   }
 
-  // base case: these floors should be the creation epoch if we didn't
+  // base case: these floors should be the pg creation epoch if we didn't
   // find any changes.
   if (e == h.epoch_created) {
     if (!h.same_interval_since)
@@ -5996,6 +5997,11 @@ COMMAND("list_missing " \
 	"name=offset,type=CephString,req=false",
 	"list missing objects on this pg, perhaps starting at an offset given in JSON",
 	"osd", "r", "cli,rest")
+COMMAND("perf histogram dump "
+        "name=logger,type=CephString,req=false "
+        "name=counter,type=CephString,req=false",
+	"Get histogram data",
+	"osd", "r", "cli,rest")
 
 // tell <osd.n> commands.  Validation of osd.n must be special-cased in client
 COMMAND("version", "report version of OSD", "osd", "r", "cli,rest")
@@ -6430,6 +6436,18 @@ void OSD::do_command(Connection *con, ceph_tid_t tid, vector<string>& cmd, buffe
   else if (prefix == "reset_pg_recovery_stats") {
     ss << "reset pg recovery stats";
     pg_recovery_stats.reset();
+  }
+
+  else if (prefix == "perf histogram dump") {
+    std::string logger;
+    std::string counter;
+    cmd_getval(cct, cmdmap, "logger", logger);
+    cmd_getval(cct, cmdmap, "counter", counter);
+    if (f) {
+      cct->get_perfcounters_collection()->dump_formatted_histograms(
+          f.get(), false, logger, counter);
+      f->flush(ds);
+    }
   }
 
   else {

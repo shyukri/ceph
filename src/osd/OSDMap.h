@@ -345,6 +345,7 @@ public:
 
   bool is_blacklisted(const entity_addr_t& a) const;
   void get_blacklist(list<pair<entity_addr_t,utime_t > > *bl) const;
+  void get_blacklist(std::set<entity_addr_t> *bl) const;
 
   string get_cluster_snapshot() const {
     if (cluster_snapshot_epoch == epoch)
@@ -500,6 +501,9 @@ public:
   bool subtree_is_down(int id, set<int> *down_cache) const;
   bool containing_subtree_is_down(CephContext *cct, int osd, int subtree_type, set<int> *down_cache) const;
   
+  bool subtree_type_is_down(CephContext *cct, int id, int subtree_type, set<int> *down_in_osds, set<int> *up_in_osds,
+                            set<int> *subtree_up, unordered_map<int, set<int> > *subtree_type_down) const;
+
   int identify_osd(const entity_addr_t& addr) const;
   int identify_osd(const uuid_d& u) const;
   int identify_osd_on_all_channels(const entity_addr_t& addr) const;

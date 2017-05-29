@@ -337,8 +337,6 @@ OPTION(mon_max_log_epochs, OPT_INT, 500)
 OPTION(mon_max_mdsmap_epochs, OPT_INT, 500)
 OPTION(mon_max_osd, OPT_INT, 10000)
 OPTION(mon_probe_timeout, OPT_DOUBLE, 2.0)
-OPTION(mon_slurp_timeout, OPT_DOUBLE, 10.0)
-OPTION(mon_slurp_bytes, OPT_INT, 256*1024)    // limit size of slurp messages
 OPTION(mon_client_bytes, OPT_U64, 100ul << 20)  // client msg data allowed in memory (in bytes)
 OPTION(mon_mgr_proxy_client_bytes_ratio, OPT_FLOAT, .3) // ratio of mon_client_bytes that can be consumed by proxied mgr commands before we error out to client
 OPTION(mon_daemon_bytes, OPT_U64, 400ul << 20)  // mds, osd message memory cap (in bytes)
@@ -365,9 +363,6 @@ OPTION(mon_config_key_max_entry_size, OPT_INT, 4096) // max num bytes per config
 OPTION(mon_sync_timeout, OPT_DOUBLE, 60.0)
 OPTION(mon_sync_max_payload_size, OPT_U32, 1048576) // max size for a sync chunk payload (say, 1MB)
 OPTION(mon_sync_debug, OPT_BOOL, false) // enable sync-specific debug
-OPTION(mon_sync_debug_leader, OPT_INT, -1) // monitor to be used as the sync leader
-OPTION(mon_sync_debug_provider, OPT_INT, -1) // monitor to be used as the sync provider
-OPTION(mon_sync_debug_provider_fallback, OPT_INT, -1) // monitor to be used as fallback if sync provider fails
 OPTION(mon_inject_sync_get_chunk_delay, OPT_DOUBLE, 0)  // inject N second delay on each get_chunk request
 OPTION(mon_osd_min_down_reporters, OPT_INT, 2)   // number of OSDs from different subtrees who need to report a down OSD for it to count
 OPTION(mon_osd_reporter_subtree_level , OPT_STR, "host")   // in which level of parent bucket the reporters are counted
@@ -383,6 +378,7 @@ OPTION(mon_debug_dump_transactions, OPT_BOOL, false)
 OPTION(mon_debug_dump_json, OPT_BOOL, false)
 OPTION(mon_debug_dump_location, OPT_STR, "/var/log/ceph/$cluster-$name.tdump")
 OPTION(mon_debug_no_require_luminous, OPT_BOOL, false)
+OPTION(mon_debug_no_require_bluestore_for_ec_overwrites, OPT_BOOL, false)
 OPTION(mon_inject_transaction_delay_max, OPT_DOUBLE, 10.0)      // seconds
 OPTION(mon_inject_transaction_delay_probability, OPT_DOUBLE, 0) // range [0, 1]
 
@@ -515,7 +511,11 @@ OPTION(mds_beacon_interval, OPT_FLOAT, 4)
 OPTION(mds_beacon_grace, OPT_FLOAT, 15)
 OPTION(mds_enforce_unique_name, OPT_BOOL, true)
 OPTION(mds_blacklist_interval, OPT_FLOAT, 24.0*60.0)  // how long to blacklist failed nodes
+
 OPTION(mds_session_timeout, OPT_FLOAT, 60)    // cap bits and leases time out if client idle
+OPTION(mds_session_blacklist_on_timeout, OPT_BOOL, true)    // whether to blacklist clients whose sessions are dropped due to timeout
+OPTION(mds_session_blacklist_on_evict, OPT_BOOL, true)  // whether to blacklist clients whose sessions are dropped via admin commands
+
 OPTION(mds_sessionmap_keys_per_op, OPT_U32, 1024)    // how many sessions should I try to load/store in a single OMAP operation?
 OPTION(mds_revoke_cap_timeout, OPT_FLOAT, 60)    // detect clients which aren't revoking caps
 OPTION(mds_recall_state_timeout, OPT_FLOAT, 60)    // detect clients which aren't trimming caps
@@ -1014,9 +1014,6 @@ OPTION(osd_max_omap_bytes_per_request, OPT_U64, 1<<30)
 
 OPTION(osd_objectstore, OPT_STR, "filestore")  // ObjectStore backend type
 OPTION(osd_objectstore_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
-// Override maintaining compatibility with older OSDs
-// Set to true for testing.  Users should NOT set this.
-OPTION(osd_debug_override_acting_compat, OPT_BOOL, false)
 OPTION(osd_objectstore_fuse, OPT_BOOL, false)
 
 OPTION(osd_bench_small_size_max_iops, OPT_U32, 100) // 100 IOPS
@@ -1384,6 +1381,7 @@ OPTION(rbd_request_timed_out_seconds, OPT_INT, 30) // number of seconds before m
 OPTION(rbd_skip_partial_discard, OPT_BOOL, false) // when trying to discard a range inside an object, set to true to skip zeroing the range.
 OPTION(rbd_enable_alloc_hint, OPT_BOOL, true) // when writing a object, it will issue a hint to osd backend to indicate the expected size object need
 OPTION(rbd_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
+OPTION(rbd_blkin_trace_all, OPT_BOOL, false) // create a blkin trace for all RBD requests
 OPTION(rbd_validate_pool, OPT_BOOL, true) // true if empty pools should be validated for RBD compatibility
 OPTION(rbd_validate_names, OPT_BOOL, true) // true if image specs should be validated
 OPTION(rbd_auto_exclusive_lock_until_manual_request, OPT_BOOL, true) // whether to automatically acquire/release exclusive lock until it is explicitly requested, i.e. before we know the user of librbd is properly using the lock API
