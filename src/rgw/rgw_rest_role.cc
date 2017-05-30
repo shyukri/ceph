@@ -1,3 +1,5 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab
 #include <errno.h>
 
 #include "common/errno.h"
@@ -14,8 +16,6 @@
 #include "rgw_rest_role.h"
 
 #define dout_subsys ceph_subsys_rgw
-
-using namespace std;
 
 void RGWRestRole::send_response()
 {
