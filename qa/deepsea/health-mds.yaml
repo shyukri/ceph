@@ -2,7 +2,7 @@ tasks:
 - install:
 - deepsea:
     repo: https://github.com/smithfarm/DeepSea.git
-    branch: wip-qa-suite
+    branch: wip-nfs-ganesha
     exec:
     - suites/basic/health-mds.sh
 #- exec:
