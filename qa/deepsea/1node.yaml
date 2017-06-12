@@ -1,5 +1,3 @@
 ceph_cm: salt
 roles:
 - [master.a]
-- [node.0]
-- [client.0]
