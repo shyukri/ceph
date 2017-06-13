@@ -5,6 +5,6 @@ tasks:
     branch: wip-nfs-ganesha
     exec:
     - suites/basic/health-nfs-ganesha.sh
-- exec:
-    master.a:
-      - sleep 1000000000 # forever
+#- exec:
+#    master.a:
+#      - sleep 1000000000 # forever
