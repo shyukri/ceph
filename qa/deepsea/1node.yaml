@@ -1,3 +1,0 @@
-ceph_cm: salt
-roles:
-- [master.a]

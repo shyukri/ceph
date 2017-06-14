@@ -1,3 +1,7 @@
+ceph_cm: salt
+roles:
+- [master.a]
+- [node.1]
 openstack:
 - volumes: # attached to each instance
     count: 2
