@@ -8,6 +8,7 @@ from teuthology import misc
 from teuthology.orchestra import run
 from teuthology.salt import Salt
 from teuthology.task import Task
+from teuthology.job_status import get_status
 from util import get_remote_for_role
 
 log = logging.getLogger(__name__)
@@ -180,21 +181,29 @@ STORAGENODES={}
                 cmd
                 ])
 
-    def end(self):
+    def purge_osds(self):
         # replace this hack with DeepSea purge when it's ready
+        self.log.info("stopping OSD services on {}"
+            .format(_remote.hostname))
+        _remote.run(args=[
+            'sudo', 'sh', '-c',
+            'systemctl stop ceph-osd.target ; sleep 10'
+            ])
+        self.log.info("unmounting OSD data devices on {}"
+            .format(_remote.hostname))
+        _remote.run(args=[
+            'sudo', 'sh', '-c',
+            'for f in vdb2 vdc2 ; do test -b /dev/$f && umount /dev/$f || true ; done'
+            ])
+
+    def gather_nfs_ganesha_log(self):
+        self.log.info("gathering NFS-Ganesha log")
+        self.log.info("summary: {}".format(self.ctx.summary))
+
+    def end(self):
         for _remote, _ in self.ctx.cluster.remotes.iteritems():
-            self.log.info("stopping OSD services on {}"
-                .format(_remote.hostname))
-            _remote.run(args=[
-                'sudo', 'sh', '-c',
-                'systemctl stop ceph-osd.target ; sleep 10'
-                ])
-            self.log.info("unmounting OSD data devices on {}"
-                .format(_remote.hostname))
-            _remote.run(args=[
-                'sudo', 'sh', '-c',
-                'for f in vdb2 vdc2 ; do test -b /dev/$f && umount /dev/$f || true ; done'
-                ])
+            self.purge_osds()
+            self.gather_nfs_ganesha_log()
         super(DeepSea, self).end()
 
 task = DeepSea
