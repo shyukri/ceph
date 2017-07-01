@@ -1,5 +1,8 @@
 #!/bin/sh -ex
 
+# create rbd pool - it's no longer there by default
+ceph osd pool create rbd 8
+
 # make sure rbd pool is EMPTY.. this is a test script!!
 rbd ls | wc -l | grep -v '^0$' && echo "nonempty rbd pool, aborting!  run this script on an empty test cluster only." && exit 1
 
