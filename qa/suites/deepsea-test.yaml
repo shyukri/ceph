@@ -6,14 +6,14 @@ roles:
 - [node.1, client.0]
 openstack:
 - volumes: # attached to each instance
-    count: 2
+    count: 3
     size: 10 # GB
 tasks:
 - install:
 - deepsea:
     repo: https://github.com/SUSE/DeepSea.git
     branch: master
-    exec: ['suites/basic/health-ok.sh']
+    exec: ['suites/basic/health-igw.sh']
 - exec:
     master.a:
       - sleep 1000000000 # forever
