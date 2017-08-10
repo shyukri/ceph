@@ -1,6 +1,8 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include <boost/optional.hpp>
+
 #include "common/ceph_json.h"
 #include "common/RWLock.h"
 #include "common/RefCountedObj.h"
@@ -492,6 +494,7 @@ public:
       }
       yield {
         int ret = http_op->wait(shard_info);
+        http_op->put();
         if (ret < 0) {
           return set_cr_error(ret);
         }
@@ -556,6 +559,7 @@ public:
 
   int request_complete() {
     int ret = http_op->wait(result);
+    http_op->put();
     if (ret < 0 && ret != -ENOENT) {
       ldout(sync_env->store->ctx(), 0) << "ERROR: failed to list remote mdlog shard, ret=" << ret << dendl;
       return ret;
@@ -833,27 +837,25 @@ public:
         }
         iter = result.begin();
         for (; iter != result.end(); ++iter) {
-          RGWRados *store;
-          int ret;
-          yield {
-            if (!lease_cr->is_locked()) {
-              lost_lock = true;
-              break;
-            }
-	    ldout(cct, 20) << "list metadata: section=" << *sections_iter << " key=" << *iter << dendl;
-	    string s = *sections_iter + ":" + *iter;
-            int shard_id;
-            store = sync_env->store;
-            ret = store->meta_mgr->get_log_shard_id(*sections_iter, *iter, &shard_id);
-            if (ret < 0) {
-              ldout(cct, 0) << "ERROR: could not determine shard id for " << *sections_iter << ":" << *iter << dendl;
-              ret_status = ret;
-              break;
-            }
-	    if (!entries_index->append(s, shard_id)) {
-              break;
-            }
-	  }
+          if (!lease_cr->is_locked()) {
+            lost_lock = true;
+            break;
+          }
+          yield; // allow entries_index consumer to make progress
+
+          ldout(cct, 20) << "list metadata: section=" << *sections_iter << " key=" << *iter << dendl;
+          string s = *sections_iter + ":" + *iter;
+          int shard_id;
+          RGWRados *store = sync_env->store;
+          int ret = store->meta_mgr->get_log_shard_id(*sections_iter, *iter, &shard_id);
+          if (ret < 0) {
+            ldout(cct, 0) << "ERROR: could not determine shard id for " << *sections_iter << ":" << *iter << dendl;
+            ret_status = ret;
+            break;
+          }
+          if (!entries_index->append(s, shard_id)) {
+            break;
+          }
 	}
       }
       yield {
@@ -951,6 +953,7 @@ public:
       }
       yield {
         int ret = http_op->wait_bl(pbl);
+        http_op->put();
         if (ret < 0) {
           return set_cr_error(ret);
         }
@@ -1230,6 +1233,7 @@ class RGWMetaSyncShardCR : public RGWCoroutine {
   RGWMetadataLog* mdlog; //< log of syncing period
   uint32_t shard_id;
   rgw_meta_sync_marker& sync_marker;
+  boost::optional<rgw_meta_sync_marker> temp_marker; //< for pending updates
   string marker;
   string max_marker;
   const std::string& period_marker; //< max marker stored in next period
@@ -1452,18 +1456,21 @@ public:
 
       if (!lost_lock) {
         /* update marker to reflect we're done with full sync */
-        if (can_adjust_marker) yield {
-          sync_marker.state = rgw_meta_sync_marker::IncrementalSync;
-          sync_marker.marker = sync_marker.next_step_marker;
-          sync_marker.next_step_marker.clear();
+        if (can_adjust_marker) {
+          // apply updates to a temporary marker, or operate() will send us
+          // to incremental_sync() after we yield
+          temp_marker = sync_marker;
+	  temp_marker->state = rgw_meta_sync_marker::IncrementalSync;
+	  temp_marker->marker = std::move(temp_marker->next_step_marker);
+	  temp_marker->next_step_marker.clear();
+	  ldout(sync_env->cct, 0) << *this << ": saving marker pos=" << temp_marker->marker << dendl;
 
-          RGWRados *store = sync_env->store;
-          ldout(sync_env->cct, 0) << *this << ": saving marker pos=" << sync_marker.marker << dendl;
-          using WriteMarkerCR = RGWSimpleRadosWriteCR<rgw_meta_sync_marker>;
-          call(new WriteMarkerCR(sync_env->async_rados, store, pool,
-                                 sync_env->shard_obj_name(shard_id),
-                                 sync_marker));
+	  using WriteMarkerCR = RGWSimpleRadosWriteCR<rgw_meta_sync_marker>;
+	  yield call(new WriteMarkerCR(sync_env->async_rados, sync_env->store,
+				       pool, sync_env->shard_obj_name(shard_id),
+				       *temp_marker));
         }
+
         if (retcode < 0) {
           ldout(sync_env->cct, 0) << "ERROR: failed to set sync marker: retcode=" << retcode << dendl;
           return retcode;
@@ -1489,6 +1496,12 @@ public:
       if (lost_lock) {
         return -EBUSY;
       }
+
+      // apply the sync marker update
+      assert(temp_marker);
+      sync_marker = std::move(*temp_marker);
+      temp_marker = boost::none;
+      // must not yield after this point!
     }
     return 0;
   }
@@ -1557,6 +1570,7 @@ public:
           ldout(sync_env->cct, 10) << *this << ": failed to fetch more log entries, retcode=" << retcode << dendl;
           yield lease_cr->go_down();
           drain_all();
+          *reset_backoff = false; // back off and try again later
           return retcode;
         }
         *reset_backoff = true; /* if we got to this point, all systems function */
@@ -1566,6 +1580,13 @@ public:
           yield call(new RGWReadMDLogEntriesCR(sync_env, mdlog, shard_id,
                                                &max_marker, INCREMENTAL_MAX_ENTRIES,
                                                &log_entries, &truncated));
+          if (retcode < 0) {
+            ldout(sync_env->cct, 10) << *this << ": failed to list mdlog entries, retcode=" << retcode << dendl;
+            yield lease_cr->go_down();
+            drain_all();
+            *reset_backoff = false; // back off and try again later
+            return retcode;
+          }
           for (log_iter = log_entries.begin(); log_iter != log_entries.end(); ++log_iter) {
             if (!period_marker.empty() && period_marker < log_iter->id) {
               done_with_period = true;
@@ -1636,12 +1657,13 @@ class RGWMetaSyncShardControlCR : public RGWBackoffControlCR
   rgw_meta_sync_marker sync_marker;
   const std::string period_marker;
 
+  static constexpr bool exit_on_error = false; // retry on all errors
 public:
   RGWMetaSyncShardControlCR(RGWMetaSyncEnv *_sync_env, const rgw_bucket& _pool,
                             const std::string& period, RGWMetadataLog* mdlog,
                             uint32_t _shard_id, const rgw_meta_sync_marker& _marker,
                             std::string&& period_marker)
-    : RGWBackoffControlCR(_sync_env->cct, true), sync_env(_sync_env),
+    : RGWBackoffControlCR(_sync_env->cct, exit_on_error), sync_env(_sync_env),
       pool(_pool), period(period), mdlog(mdlog), shard_id(_shard_id),
       sync_marker(_marker), period_marker(std::move(period_marker)) {}
 

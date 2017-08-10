@@ -504,6 +504,9 @@ function test_auth()
   #
   local auid=444
   ceph-authtool --create-keyring --name client.TEST --gen-key --set-uid $auid TEST-keyring
+  expect_false ceph auth import --in-file TEST-keyring
+  rm TEST-keyring
+  ceph-authtool --create-keyring --name client.TEST --gen-key --cap mon "allow r" --set-uid $auid TEST-keyring
   ceph auth import --in-file TEST-keyring
   rm TEST-keyring
   ceph auth get client.TEST > $TMPFILE
@@ -1217,7 +1220,7 @@ function test_mon_osd()
   ceph osd pool delete data data --yes-i-really-really-mean-it
 
   ceph osd pause
-  ceph osd dump | grep 'flags pauserd,pausewr'
+  ceph osd dump | grep 'flags.*pauserd,pausewr'
   ceph osd unpause
 
   ceph osd tree

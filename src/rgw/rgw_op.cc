@@ -411,7 +411,8 @@ int rgw_build_object_policies(RGWRados *store, struct req_state *s,
     }
     s->object_acl = new RGWAccessControlPolicy(s->cct);
 
-    rgw_obj obj(s->bucket, s->object);
+    rgw_obj obj(s->bucket, s->object.name);
+    obj.set_instance(s->object.instance);
       
     store->set_atomic(s->obj_ctx, obj);
     if (prefetch_data) {
@@ -723,7 +724,9 @@ int RGWGetObj::read_user_manifest_part(rgw_bucket& bucket,
   if (op_ret < 0)
     return op_ret;
 
-  if (!verify_object_permission(s, bucket_policy, &obj_policy, RGW_PERM_READ)) {
+  if (s->system_request) {
+    ldout(s->cct, 2) << "overriding permissions due to system operation" << dendl;
+  } else if (!verify_object_permission(s, bucket_policy, &obj_policy, RGW_PERM_READ)) {
     return -EPERM;
   }
 
@@ -1274,7 +1277,7 @@ void RGWGetObj::execute()
     return;
   }
   attr_iter = attrs.find(RGW_ATTR_SLO_MANIFEST);
-  if (attr_iter != attrs.end()) {
+  if (attr_iter != attrs.end() && !skip_manifest) {
     is_slo = true;
     op_ret = handle_slo_manifest(attr_iter->second);
     if (op_ret < 0) {
@@ -1825,7 +1828,7 @@ int RGWCreateBucket::verify_permission()
     if (op_ret < 0)
       return op_ret;
 
-    if (buckets.count() >= s->user->max_buckets) {
+    if (int32_t(buckets.count()) >= s->user->max_buckets) {
       return -ERR_TOO_MANY_BUCKETS;
     }
   }
@@ -2230,8 +2233,30 @@ void RGWDeleteBucket::execute()
 
 int RGWPutObj::verify_permission()
 {
-  if (!verify_bucket_permission(s, RGW_PERM_WRITE))
+  if (copy_source) {
+
+    RGWAccessControlPolicy cs_policy(s->cct);
+    map<string, bufferlist> cs_attrs;
+    rgw_bucket cs_bucket(copy_source_bucket_info.bucket);
+    rgw_obj_key cs_object(copy_source_object_name, copy_source_version_id);
+
+    /* check source object permissions */
+    if (read_policy(store, s, copy_source_bucket_info, cs_attrs, &cs_policy, cs_bucket, cs_object) < 0) {
+      return -EACCES;
+    }
+
+    /* system request overrides permission checks */
+    if (!s->system_request &&
+        !cs_policy.verify_permission(s->user->user_id, s->perm_mask,
+				     RGW_PERM_READ)) {
+      return -EACCES;
+    }
+
+  }
+
+  if (!verify_bucket_permission(s, RGW_PERM_WRITE)) {
     return -EACCES;
+  }
 
   return 0;
 }
@@ -2407,6 +2432,59 @@ void RGWPutObj::pre_exec()
   rgw_bucket_object_pre_exec(s);
 }
 
+class RGWPutObj_CB : public RGWGetDataCB
+{
+  RGWPutObj *op;
+public:
+  RGWPutObj_CB(RGWPutObj *_op) : op(_op) {}
+  virtual ~RGWPutObj_CB() {}
+
+  int handle_data(bufferlist& bl, off_t bl_ofs, off_t bl_len) {
+    return op->get_data_cb(bl, bl_ofs, bl_len);
+  }
+};
+
+int RGWPutObj::get_data_cb(bufferlist& bl, off_t bl_ofs, off_t bl_len)
+{
+  bufferlist bl_tmp;
+  bl.copy(bl_ofs, bl_len, bl_tmp);
+
+  bl_aux.append(bl_tmp);
+
+  return bl_len;
+}
+
+int RGWPutObj::get_data(const off_t fst, const off_t lst, bufferlist& bl)
+{
+  RGWPutObj_CB cb(this);
+  int ret = 0;
+
+  int64_t new_ofs, new_end;
+
+  new_ofs = fst;
+  new_end = lst;
+
+  rgw_obj_key obj_key(copy_source_object_name, copy_source_version_id);
+  rgw_obj obj(copy_source_bucket_info.bucket, obj_key.name);
+  obj.set_instance(obj_key.instance);
+
+  RGWRados::Object op_target(store, copy_source_bucket_info, *static_cast<RGWObjectCtx *>(s->obj_ctx), obj);
+  RGWRados::Object::Read read_op(&op_target);
+
+  ret = read_op.prepare(&new_ofs, &new_end);
+  if (ret < 0)
+    return ret;
+
+  ret = read_op.iterate(new_ofs, new_end, &cb);
+  if (ret < 0) {
+    return ret;
+  }
+
+  bl.claim_append(bl_aux);
+
+  return ret;
+}
+
 void RGWPutObj::execute()
 {
   RGWPutObjProcessor *processor = NULL;
@@ -2418,7 +2496,9 @@ void RGWPutObj::execute()
   bufferlist bl, aclbl;
   int len;
   map<string, string>::iterator iter;
-  bool multipart;
+  bool multipart;  
+  off_t fst;
+  off_t lst;
 
   bool need_calc_md5 = (dlo_manifest == NULL) && (slo_info == NULL);
 
@@ -2498,9 +2578,24 @@ void RGWPutObj::execute()
     goto done;
   }
 
+  fst = copy_source_range_fst;
+  lst = copy_source_range_lst;
+
   do {
     bufferlist data_in;
-    len = get_data(data_in);
+    if (fst > lst)
+      break;
+    if (!copy_source) {
+      len = get_data(data_in);
+    } else {
+      uint64_t cur_lst = min(fst + s->cct->_conf->rgw_max_chunk_size - 1, lst);
+      op_ret = get_data(fst, cur_lst, data_in);
+      if (op_ret < 0)
+        goto done;
+      len = data_in.length();
+      s->content_length += len;
+      fst += len;
+    }
     if (len < 0) {
       op_ret = len;
       goto done;
@@ -4402,9 +4497,10 @@ void RGWListBucketMultiparts::execute()
 
 void RGWGetHealthCheck::execute()
 {
-  if (! g_conf->rgw_healthcheck_disabling_path.empty() &&
-      ::access(g_conf->rgw_healthcheck_disabling_path.c_str(), F_OK )) {
-    op_ret = -ERR_SERVICE_UNAVAILABLE;
+  if (!g_conf->rgw_healthcheck_disabling_path.empty() &&
+      (::access(g_conf->rgw_healthcheck_disabling_path.c_str(), F_OK) == 0)) {
+    /* Disabling path specified & existent in the filesystem. */
+    op_ret = -ERR_SERVICE_UNAVAILABLE; /* 503 */
   } else {
     op_ret = 0; /* 200 OK */
   }
@@ -4722,7 +4818,8 @@ void RGWSetAttrs::execute()
   if (op_ret < 0)
     return;
 
-  rgw_obj obj(s->bucket, s->object);
+  rgw_obj obj(s->bucket, s->object.name);
+  obj.set_instance(s->object.instance);
 
   store->set_atomic(s->obj_ctx, obj);
 
@@ -4736,6 +4833,29 @@ void RGWSetAttrs::execute()
 				  &s->bucket_info.objv_tracker);
   }
 }
+
+void RGWGetObjLayout::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWGetObjLayout::execute()
+{
+  rgw_obj obj(s->bucket, s->object.name);
+  obj.set_instance(s->object.instance);
+  target = new RGWRados::Object(store, s->bucket_info, *static_cast<RGWObjectCtx *>(s->obj_ctx), obj);
+  RGWRados::Object::Read stat_op(target);
+
+  op_ret = stat_op.prepare(NULL, NULL);
+  if (op_ret < 0) {
+    return;
+  }
+
+  head_obj = stat_op.state.obj;
+
+  op_ret = target->get_manifest(&manifest);
+}
+
 
 RGWHandler::~RGWHandler()
 {

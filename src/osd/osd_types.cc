@@ -835,6 +835,10 @@ std::string pg_state_string(int state)
     oss << "incomplete+";
   if (state & PG_STATE_PEERED)
     oss << "peered+";
+  if (state & PG_STATE_SNAPTRIM)
+    oss << "snaptrim+";
+  if (state & PG_STATE_SNAPTRIM_WAIT)
+    oss << "snaptrim_wait+";
   string ret(oss.str());
   if (ret.length() > 0)
     ret.resize(ret.length() - 1);
@@ -892,6 +896,10 @@ int pg_string_state(const std::string& state)
     type = PG_STATE_ACTIVATING;
   else if (state == "peered")
     type = PG_STATE_PEERED;
+  else if (state == "snaptrim")
+    type = PG_STATE_SNAPTRIM;
+  else if (state == "snaptrim_wait")
+    type = PG_STATE_SNAPTRIM_WAIT;
   else
     type = -1;
   return type;
@@ -1498,6 +1506,12 @@ void pg_pool_t::encode(bufferlist& bl, uint64_t features) const
     // this was the first post-hammer thing we added; if it's missing, encode
     // like hammer.
     v = 21;
+    if (!(features & CEPH_FEATURE_OSD_HITSET_GMT)) {
+      // CEPH_FEATURE_OSD_HITSET_GMT requires pg_pool_t v21 which has
+      // use_gmt_hitset, and two fields added before v21.
+      // See http://tracker.ceph.com/issues/19508
+      v = 17;
+    }
   }
 
   ENCODE_START(v, 5, bl);
@@ -4724,7 +4738,7 @@ void object_info_t::encode(bufferlist& bl) const
        ++i) {
     old_watchers.insert(make_pair(i->first.second, i->second));
   }
-  ENCODE_START(15, 8, bl);
+  ENCODE_START(16, 8, bl);
   ::encode(soid, bl);
   ::encode(myoloc, bl);	//Retained for compatibility
   ::encode((__u32)0, bl); // was category, no longer used
@@ -4752,13 +4766,16 @@ void object_info_t::encode(bufferlist& bl) const
   ::encode(local_mtime, bl);
   ::encode(data_digest, bl);
   ::encode(omap_digest, bl);
+  ::encode(expected_object_size, bl);
+  ::encode(expected_write_size, bl);
+  ::encode(alloc_hint_flags, bl);
   ENCODE_FINISH(bl);
 }
 
 void object_info_t::decode(bufferlist::iterator& bl)
 {
   object_locator_t myoloc;
-  DECODE_START_LEGACY_COMPAT_LEN(15, 8, 8, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(16, 8, 8, bl);
   map<entity_name_t, watch_info_t> old_watchers;
   ::decode(soid, bl);
   ::decode(myoloc, bl);
@@ -4831,6 +4848,15 @@ void object_info_t::decode(bufferlist::iterator& bl)
     clear_flag(FLAG_DATA_DIGEST);
     clear_flag(FLAG_OMAP_DIGEST);
   }
+  if (struct_v >= 16) {
+    ::decode(expected_object_size, bl);
+    ::decode(expected_write_size, bl);
+    ::decode(alloc_hint_flags, bl);
+  } else {
+    expected_object_size = 0;
+    expected_write_size = 0;
+    alloc_hint_flags = 0;
+  }
   DECODE_FINISH(bl);
 }
 
@@ -4856,6 +4882,8 @@ void object_info_t::dump(Formatter *f) const
   f->dump_unsigned("truncate_size", truncate_size);
   f->dump_unsigned("data_digest", data_digest);
   f->dump_unsigned("omap_digest", omap_digest);
+  f->dump_unsigned("expected_object_size", expected_object_size);
+  f->dump_unsigned("expected_write_size", expected_write_size);
   f->open_object_section("watchers");
   for (map<pair<uint64_t, entity_name_t>,watch_info_t>::const_iterator p =
          watchers.begin(); p != watchers.end(); ++p) {
@@ -4890,6 +4918,8 @@ ostream& operator<<(ostream& out, const object_info_t& oi)
     out << " dd " << std::hex << oi.data_digest << std::dec;
   if (oi.is_omap_digest())
     out << " od " << std::hex << oi.omap_digest << std::dec;
+  out << " alloc_hint [" << oi.expected_object_size
+      << " " << oi.expected_write_size << "]";
 
   out << ")";
   return out;
@@ -5358,7 +5388,8 @@ void ScrubMap::generate_test_instances(list<ScrubMap*>& o)
 
 void ScrubMap::object::encode(bufferlist& bl) const
 {
-  ENCODE_START(7, 2, bl);
+  bool compat_read_error = read_error || ec_hash_mismatch || ec_size_mismatch;
+  ENCODE_START(8, 2, bl);
   ::encode(size, bl);
   ::encode(negative, bl);
   ::encode(attrs, bl);
@@ -5368,16 +5399,19 @@ void ScrubMap::object::encode(bufferlist& bl) const
   ::encode(snapcolls, bl);
   ::encode(omap_digest, bl);
   ::encode(omap_digest_present, bl);
-  ::encode(read_error, bl);
+  ::encode(compat_read_error, bl);
   ::encode(stat_error, bl);
+  ::encode(read_error, bl);
+  ::encode(ec_hash_mismatch, bl);
+  ::encode(ec_size_mismatch, bl);
   ENCODE_FINISH(bl);
 }
 
 void ScrubMap::object::decode(bufferlist::iterator& bl)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(7, 2, 2, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(8, 2, 2, bl);
   ::decode(size, bl);
-  bool tmp;
+  bool tmp, compat_read_error = false;
   ::decode(tmp, bl);
   negative = tmp;
   ::decode(attrs, bl);
@@ -5400,13 +5434,23 @@ void ScrubMap::object::decode(bufferlist::iterator& bl)
     omap_digest_present = tmp;
   }
   if (struct_v >= 6) {
-    ::decode(tmp, bl);
-    read_error = tmp;
+    ::decode(compat_read_error, bl);
   }
   if (struct_v >= 7) {
     ::decode(tmp, bl);
     stat_error = tmp;
   }
+  if (struct_v >= 8) {
+    ::decode(tmp, bl);
+    read_error = tmp;
+    ::decode(tmp, bl);
+    ec_hash_mismatch = tmp;
+    ::decode(tmp, bl);
+    ec_size_mismatch = tmp;
+  }
+  // If older encoder found a read_error, set read_error
+  if (compat_read_error && !read_error && !ec_hash_mismatch && !ec_size_mismatch)
+    read_error = true;
   DECODE_FINISH(bl);
 }
 

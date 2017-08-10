@@ -650,6 +650,15 @@ protected:
   const char *supplied_etag;
   const char *if_match;
   const char *if_nomatch;
+  const char *copy_source;
+  const char *copy_source_range;
+  RGWBucketInfo copy_source_bucket_info;
+  string copy_source_tenant_name;
+  string copy_source_bucket_name;
+  string copy_source_object_name;
+  string copy_source_version_id;
+  off_t copy_source_range_fst;
+  off_t copy_source_range_lst;
   string etag;
   bool chunked_upload;
   RGWAccessControlPolicy policy;
@@ -659,6 +668,7 @@ protected:
   ceph::real_time mtime;
   uint64_t olh_epoch;
   string version_id;
+  bufferlist bl_aux;
 
   ceph::real_time delete_at;
 
@@ -668,6 +678,10 @@ public:
                 supplied_etag(NULL),
                 if_match(NULL),
                 if_nomatch(NULL),
+                copy_source(NULL),
+                copy_source_range(NULL),
+                copy_source_range_fst(0),
+                copy_source_range_lst(0),
                 chunked_upload(0),
                 dlo_manifest(NULL),
                 slo_info(NULL),
@@ -692,6 +706,9 @@ public:
   int verify_permission();
   void pre_exec();
   void execute();
+
+  int get_data_cb(bufferlist& bl, off_t bl_ofs, off_t bl_len);
+  int get_data(const off_t fst, const off_t lst, bufferlist& bl);
 
   virtual int get_params() = 0;
   virtual int get_data(bufferlist& bl) = 0;
@@ -1597,5 +1614,33 @@ public:
   virtual RGWOpType get_type() { return RGW_OP_SET_ATTRS; }
   virtual uint32_t op_mask() { return RGW_OP_TYPE_WRITE; }
 };
+
+class RGWGetObjLayout : public RGWOp {
+protected:
+  RGWRados::Object *target{nullptr};
+  RGWObjManifest *manifest{nullptr};
+  rgw_obj head_obj;
+
+public:
+  RGWGetObjLayout() {
+    delete target;
+  }
+
+  int check_caps(RGWUserCaps& caps) {
+    return caps.check_cap("admin", RGW_CAP_READ);
+  }
+  int verify_permission() {
+    return check_caps(s->user->caps);
+  }
+  void pre_exec();
+  void execute();
+
+  virtual void send_response() = 0;
+  virtual const string name() { return "get_obj_layout"; }
+  virtual RGWOpType get_type() { return RGW_OP_GET_OBJ_LAYOUT; }
+  virtual uint32_t op_mask() { return RGW_OP_TYPE_READ; }
+};
+
+
 
 #endif /* CEPH_RGW_OP_H */

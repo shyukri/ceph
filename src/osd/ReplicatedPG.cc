@@ -1675,20 +1675,27 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
 
+  // order this op as a write?
+  bool write_ordered =
+    op->may_write() ||
+    op->may_cache() ||
+    m->has_flag(CEPH_OSD_FLAG_RWORDERED);
+
   // discard due to cluster full transition?  (we discard any op that
   // originates before the cluster or pool is marked full; the client
   // will resend after the full flag is removed or if they expect the
   // op to succeed despite being full).  The except is FULL_FORCE ops,
   // which there is no reason to discard because they bypass all full
   // checks anyway.
+  // If this op isn't write or read-ordered, we skip
   // FIXME: we exclude mds writes for now.
-  if (!(m->get_source().is_mds() || m->has_flag(CEPH_OSD_FLAG_FULL_FORCE)) &&
+  if (write_ordered && !( m->get_source().is_mds() || m->has_flag(CEPH_OSD_FLAG_FULL_FORCE)) &&
       info.history.last_epoch_marked_full > m->get_map_epoch()) {
     dout(10) << __func__ << " discarding op sent before full " << m << " "
 	     << *m << dendl;
     return;
   }
-  if (!m->get_source().is_mds() && osd->check_failsafe_full()) {
+  if (!(m->get_source().is_mds()) && osd->check_failsafe_full() && write_ordered) {
     dout(10) << __func__ << " fail-safe full check failed, dropping request"
 	     << dendl;
     return;
@@ -1718,12 +1725,6 @@ void ReplicatedPG::do_op(OpRequestRef& op)
       return;
     }
   }
-
-  // order this op as a write?
-  bool write_ordered =
-    op->may_write() ||
-    op->may_cache() ||
-    m->has_flag(CEPH_OSD_FLAG_RWORDERED);
 
   dout(10) << "do_op " << *m
 	   << (op->may_write() ? " may_write" : "")
@@ -3617,14 +3618,6 @@ ReplicatedPG::OpContextUPtr ReplicatedPG::trim_object(const hobject_t &coid)
 
 void ReplicatedPG::snap_trimmer(epoch_t queued)
 {
-  if (g_conf->osd_snap_trim_sleep > 0) {
-    unlock();
-    utime_t t;
-    t.set_from_double(g_conf->osd_snap_trim_sleep);
-    t.sleep();
-    lock();
-    dout(20) << __func__ << " slept for " << t << dendl;
-  }
   if (deleting || pg_has_reset_since(queued)) {
     return;
   }
@@ -5019,6 +5012,8 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
           ctx->mod_desc.create();
           t->touch(soid);
 	}
+	oi.expected_object_size = op.alloc_hint.expected_object_size;
+	oi.expected_write_size = op.alloc_hint.expected_write_size;
         t->set_alloc_hint(soid, op.alloc_hint.expected_object_size,
                           op.alloc_hint.expected_write_size);
         ctx->delta_stats.num_wr++;
@@ -8682,7 +8677,7 @@ void ReplicatedPG::submit_log_entries(
   ObcLockManager &&manager,
   boost::optional<std::function<void(void)> > &&on_complete)
 {
-  dout(10) << __func__ << entries << dendl;
+  dout(10) << __func__ << " " << entries << dendl;
   assert(is_primary());
 
   ObjectStore::Transaction t;
@@ -9032,7 +9027,14 @@ ObjectContextRef ReplicatedPG::get_object_context(const hobject_t& soid,
       }
     }
 
-    object_info_t oi(bv);
+    object_info_t oi;
+    try {
+      bufferlist::iterator bliter = bv.begin();
+      ::decode(oi, bliter);
+    } catch (...) {
+      dout(0) << __func__ << ": obc corrupt: " << soid << dendl;
+      return ObjectContextRef();   // -ENOENT!
+    }
 
     assert(oi.soid.pool == (int64_t)info.pgid.pool());
 
@@ -9677,13 +9679,20 @@ void ReplicatedPG::recover_got(hobject_t oid, eversion_t v)
   }
 }
 
-
-void ReplicatedPG::failed_push(pg_shard_t from, const hobject_t &soid)
+void ReplicatedPG::failed_push(const list<pg_shard_t> &from, const hobject_t &soid)
 {
+  dout(20) << __func__ << ": " << soid << dendl;
   assert(recovering.count(soid));
+  auto obc = recovering[soid];
+  if (obc) {
+    list<OpRequestRef> blocked_ops;
+    obc->drop_recovery_read(&blocked_ops);
+    requeue_ops(blocked_ops);
+  }
   recovering.erase(soid);
-  missing_loc.remove_location(soid, from);
-  dout(0) << "_failed_push " << soid << " from shard " << from
+  for (auto&& i : from)
+    missing_loc.remove_location(soid, i);
+  dout(0) << __func__ << " " << soid << " from shard " << from
 	  << ", reps on " << missing_loc.get_locations(soid)
 	  << " unfound? " << missing_loc.is_unfound(soid) << dendl;
   finish_recovery_op(soid);  // close out this attempt,
@@ -9952,6 +9961,7 @@ void ReplicatedPG::mark_all_unfound_lost(
       [=]() {
 	requeue_ops(waiting_for_all_missing);
 	waiting_for_all_missing.clear();
+	requeue_object_waiters(waiting_for_unreadable_object);
 	osd->queue_for_recovery(this);
 
 	stringstream ss;
@@ -10330,7 +10340,7 @@ void ReplicatedPG::_clear_recovery_state()
 
 void ReplicatedPG::cancel_pull(const hobject_t &soid)
 {
-  dout(20) << __func__ << ": soid" << dendl;
+  dout(20) << __func__ << ": " << soid << dendl;
   assert(recovering.count(soid));
   ObjectContextRef obc = recovering[soid];
   if (obc) {
@@ -11582,6 +11592,25 @@ void ReplicatedPG::hit_set_remove_all()
     hobject_t oid = get_hit_set_archive_object(p->begin, p->end, p->using_gmt);
     assert(!is_degraded_or_backfilling_object(oid));
     ObjectContextRef obc = get_object_context(oid, false);
+    if (!obc) {
+      dout(1) << __func__ << " " << oid << " not found" << dendl;
+      if (pool.info.use_gmt_hitset != p->using_gmt) {
+	dout(1) << __func__ << " trying with pool's setting: "
+		<< "use_gmt_hitset = " << pool.info.use_gmt_hitset << dendl;
+	// redo the check
+	for (const auto& hitset : info.hit_set.history) {
+	  auto oid = get_hit_set_archive_object(hitset.begin, hitset.end,
+						pool.info.use_gmt_hitset);
+	  if (is_degraded_or_backfilling_object(oid))
+	    return;
+	  if (scrubber.write_blocked_by_scrub(oid, get_sort_bitwise()))
+	    return;
+	}
+	auto oid = get_hit_set_archive_object(p->begin, p->end,
+					      pool.info.use_gmt_hitset);
+	obc = get_object_context(oid, false);
+      }
+    }
     assert(obc);
 
     OpContextUPtr ctx = simple_opc_create(obc);
@@ -11823,7 +11852,17 @@ void ReplicatedPG::hit_set_trim(OpContextUPtr &ctx, unsigned max)
     list<pg_hit_set_info_t>::iterator p = updated_hit_set_hist.history.begin();
     assert(p != updated_hit_set_hist.history.end());
     hobject_t oid = get_hit_set_archive_object(p->begin, p->end, p->using_gmt);
-
+    ObjectContextRef obc = get_object_context(oid, false);
+    if (!obc) {
+      dout(1) << __func__ << " " << oid << " not found" << dendl;
+      if (pool.info.use_gmt_hitset != p->using_gmt) {
+	dout(1) << __func__ << " trying with pool's setting: "
+		<< "use_gmt_hitset = " << pool.info.use_gmt_hitset << dendl;
+	oid = get_hit_set_archive_object(p->begin, p->end, pool.info.use_gmt_hitset);
+	obc = get_object_context(oid, false);
+      }
+    }
+    assert(obc);
     assert(!is_degraded_or_backfilling_object(oid));
 
     dout(20) << __func__ << " removing " << oid << dendl;
@@ -11849,8 +11888,6 @@ void ReplicatedPG::hit_set_trim(OpContextUPtr &ctx, unsigned max)
     }
     updated_hit_set_hist.history.pop_front();
 
-    ObjectContextRef obc = get_object_context(oid, false);
-    assert(obc);
     --ctx->delta_stats.num_objects;
     --ctx->delta_stats.num_objects_hit_set_archive;
     ctx->delta_stats.num_bytes -= obc->obs.oi.size;
@@ -13133,8 +13170,28 @@ boost::statechart::result ReplicatedPG::NotTrimming::react(const SnapTrim&)
 	     << pg->snap_trimq.range_start()
 	     << dendl;
     post_event(SnapTrim());
-    return transit<TrimmingObjects>();
+    return transit<Trimming>();
   }
+}
+
+boost::statechart::result ReplicatedPG::WaitReservation::react(const SnapTrimReserved&)
+{
+  ReplicatedPG *pg = context< SnapTrimmer >().pg;
+  ldout(pg->cct, 10) << "WaitReservation react SnapTrimReserved" << dendl;
+
+  pending = nullptr;
+  if (!pg->is_primary() || !pg->is_active() || !pg->is_clean() ||
+      pg->scrubber.active || pg->snap_trimq.empty()) {
+    post_event(SnapTrim());
+    return transit< NotTrimming >();
+  }
+
+  context<SnapTrimmer>().snap_to_trim = pg->snap_trimq.range_start();
+  ldout(pg->cct, 10) << "NotTrimming: trimming "
+                     << pg->snap_trimq.range_start()
+                     << dendl;
+  pg->queue_snap_trim();
+  return transit< TrimmingObjects >();
 }
 
 /* TrimmingObjects */
@@ -13142,12 +13199,26 @@ ReplicatedPG::TrimmingObjects::TrimmingObjects(my_context ctx)
   : my_base(ctx),
     NamedState(context< SnapTrimmer >().pg->cct, "Trimming/TrimmingObjects")
 {
+  auto *pg = context< SnapTrimmer >().pg;
+  context< SnapTrimmer >().log_enter(state_name);
+  pg->state_set(PG_STATE_SNAPTRIM);
+  pg->publish_stats_to_osd();
+}
+
+ReplicatedPG::Trimming::Trimming(my_context ctx)
+  : my_base(ctx),
+    NamedState(context< SnapTrimmer >().pg->cct, "Trimming")
+{
   context< SnapTrimmer >().log_enter(state_name);
 }
 
-void ReplicatedPG::TrimmingObjects::exit()
+void ReplicatedPG::Trimming::exit()
 {
   context< SnapTrimmer >().log_exit(state_name, enter_time);
+  auto *pg = context< SnapTrimmer >().pg;
+  pg->osd->snap_reserver.cancel_reservation(pg->get_pgid());
+  pg->state_clear(PG_STATE_SNAPTRIM);
+  pg->publish_stats_to_osd();
   context<SnapTrimmer>().in_flight.clear();
 }
 
@@ -13195,7 +13266,7 @@ boost::statechart::result ReplicatedPG::TrimmingObjects::react(const SnapTrim&)
     in_flight.insert(pos);
     pg->simple_opc_submit(std::move(ctx));
   }
-  return discard_event();
+  return transit< WaitTrimTimer >();
 }
 
 /* WaitingOnReplicasObjects */
