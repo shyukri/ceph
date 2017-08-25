@@ -2,3 +2,4 @@ overrides:
   deepsea:
     exec:
     - suites/basic/health-mds.sh
+    - sleep 100000000
