@@ -600,7 +600,7 @@ Summary:	SELinux support for Ceph MON, OSD and MDS
 Group:		System Environment/Base
 Requires:	ceph-base = %{version}-%{release}
 Requires:	policycoreutils, libselinux-utils
-Requires(post):	ceph-base = %{epoch}:%{version}-%{release}
+Requires(post):	ceph-base = %{version}-%{release}
 Requires(post): selinux-policy-base >= %{_selinux_policy_version}, policycoreutils, gawk
 Requires(postun): policycoreutils
 %description selinux
