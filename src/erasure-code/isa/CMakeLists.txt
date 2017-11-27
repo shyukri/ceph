@@ -63,8 +63,6 @@ add_library(ec_isa SHARED
   $<TARGET_OBJECTS:erasure_code_objs>)
 add_dependencies(ec_isa ${CMAKE_SOURCE_DIR}/src/ceph_ver.h)
 target_link_libraries(ec_isa ${EXTRALIBS})
-set_target_properties(ec_isa PROPERTIES
-  INSTALL_RPATH "")
 install(TARGETS ec_isa DESTINATION ${erasure_plugin_dir})
 
 if(WITH_EMBEDDED)
