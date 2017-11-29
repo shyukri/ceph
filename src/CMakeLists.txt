@@ -993,6 +993,8 @@ if(WITH_LIBCEPHFS)
     ceph_syn.cc
     client/SyntheticClient.cc)
   add_executable(ceph-syn ${ceph_syn_srcs})
+  set_target_properties(ceph-syn PROPERTIES
+    INSTALL_RPATH "")
   target_link_libraries(ceph-syn client global-static common)
 
   set(mount_ceph_srcs
