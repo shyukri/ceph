@@ -180,7 +180,7 @@ void Paxos::collect(version_t oldpn)
   }
 
   // pick new pn
-  accepted_pn = get_new_proposal_number(MAX(accepted_pn, oldpn));
+  accepted_pn = get_new_proposal_number(std::max(accepted_pn, oldpn));
   accepted_pn_from = last_committed;
   num_last = 1;
   dout(10) << "collect with pn " << accepted_pn << dendl;
@@ -1128,7 +1128,7 @@ void Paxos::handle_lease(MonOpRequestRef op)
   ack->last_committed = last_committed;
   ack->first_committed = first_committed;
   ack->lease_timestamp = ceph_clock_now();
-  ::encode(mon->session_map.feature_map, ack->feature_map);
+  encode(mon->session_map.feature_map, ack->feature_map);
   lease->get_connection()->send_message(ack);
 
   // (re)set timeout event.
@@ -1155,7 +1155,7 @@ void Paxos::handle_lease_ack(MonOpRequestRef op)
     if (ack->feature_map.length()) {
       auto p = ack->feature_map.begin();
       FeatureMap& t = mon->quorum_feature_map[from];
-      ::decode(t, p);
+      decode(t, p);
     }
     if (acked_lease == mon->get_quorum()) {
       // yay!
@@ -1225,7 +1225,7 @@ void Paxos::lease_renew_timeout()
 void Paxos::trim()
 {
   assert(should_trim());
-  version_t end = MIN(get_version() - g_conf->paxos_min,
+  version_t end = std::min(get_version() - g_conf->paxos_min,
 		      get_first_committed() + g_conf->paxos_trim_max);
 
   if (first_committed >= end)

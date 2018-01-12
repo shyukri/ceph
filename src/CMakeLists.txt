@@ -38,6 +38,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unknown-pragmas")
 if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -rdynamic")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wstrict-null-sentinel -Woverloaded-virtual")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-new-ttp-matching")
   if(NOT WITH_OSD_INSTRUMENT_FUNCTIONS)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie")
   endif()
@@ -78,7 +79,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   if(NOT CMAKE_BUILD_TYPE STREQUAL Debug)
     if(HAS_FORTIFY_SOURCE)
       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2")
-      set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2")
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2")
     endif()
   endif()
   CHECK_C_COMPILER_FLAG(-fstack-protector-strong HAS_STACK_PROTECT)
@@ -140,15 +141,15 @@ else(no_yasm)
   endif(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64")
 endif(no_yasm)
 
-# require c++11
-if(CMAKE_VERSION VERSION_LESS "3.1")
+# require c++17
+if(CMAKE_VERSION VERSION_LESS "3.8")
   include(CheckCXXCompilerFlag)
-  CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
-  if(NOT COMPILER_SUPPORTS_CXX11)
+  CHECK_CXX_COMPILER_FLAG("-std=c++17" COMPILER_SUPPORTS_CXX17)
+  if(NOT COMPILER_SUPPORTS_CXX17)
     message(FATAL_ERROR
-      "The compiler ${CMAKE_CXX_COMPILER} has no C++11 support.")
+      "The compiler ${CMAKE_CXX_COMPILER} has no C++17 support.")
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
   include(CheckCCompilerFlag)
   CHECK_C_COMPILER_FLAG("-std=gnu99" COMPILER_SUPPORTS_GNU99)
   if(NOT COMPILER_SUPPORTS_GNU99)
@@ -157,7 +158,7 @@ if(CMAKE_VERSION VERSION_LESS "3.1")
   endif()
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99")
 else()
-  set(CMAKE_CXX_STANDARD 11)
+  set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_EXTENSIONS OFF)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_C_STANDARD 99)
@@ -166,19 +167,16 @@ else()
   set(C_STANDARD_REQUIRED ON)
 endif()
 
-include(CheckCXXSourceCompiles)
-CHECK_CXX_SOURCE_COMPILES("
-int main() {
-#ifdef __GLIBCXX__
-#if __GLIBCXX__ < 20150422ul /* libstdc++ < 5.1.0 */
-#error libstdc++ < 5.1.0 does not confirm to C++11
-#endif
-#endif
-}
-" HAVE_SANE_GLIBCXX)
-if(NOT HAVE_SANE_GLIBCXX)
+
+if(CMAKE_COMPILER_IS_GNUCXX AND
+    CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.1)
+  # this is not always correct, as one can use clang with libstdc++ or
+  # use old gcc with new libstdc++, but it covers the most cases.
+  #
   # libstdc++ 4.9 has O(n) list::size(), and its regex is buggy
-  message(WARNING "performance regression is expected due to an O(n) implementation of 'std::list::size()' in libstdc++ older than 5.1.0")
+  message(SEND_ERROR "performance regression is expected due to an O(n) "
+    "implementation of 'std::list::size()' in libstdc++ older than 5.1.0, "
+    "Please use GCC 5.1 and up.")
 endif()
 
 ## Handle diagnostics color if compiler supports them.
@@ -416,6 +414,7 @@ set(libcommon_files
   common/LogClient.cc
   common/LogEntry.cc
   common/PrebufferedStreambuf.cc
+  common/CachedPrebufferedStreambuf.cc
   common/BackTrace.cc
   common/perf_counters.cc
   common/perf_histogram.cc
@@ -427,7 +426,7 @@ set(libcommon_files
   common/bloom_filter.cc
   common/Readahead.cc
   common/cmdparse.cc
-  common/escape.c
+  common/escape.cc
   common/url_escape.cc
   common/io_priority.cc
   common/Clock.cc
@@ -628,7 +627,6 @@ set(ceph_common_deps
   json_spirit erasure_code ${LIB_RESOLV}
   Boost::thread
   Boost::system
-  Boost::regex
   Boost::random
   Boost::program_options
   Boost::date_time
@@ -684,7 +682,14 @@ if(WITH_DPDK)
 endif(WITH_DPDK)
 
 add_library(common STATIC ${ceph_common_objs})
-target_link_libraries(common ${ceph_common_deps})
+target_link_libraries(common
+  PRIVATE ${ceph_common_deps})
+if(WITH_STATIC_LIBSTDCXX)
+  # the apps linking against libcommon are daemons also written in C++, so we
+  # need to link them against libstdc++.
+  target_link_libraries(common
+    INTERFACE "-static-libstdc++ -static-libgcc")
+endif()
 
 add_library(ceph-common SHARED ${ceph_common_objs})
 target_link_libraries(ceph-common ${ceph_common_deps})
@@ -692,6 +697,12 @@ target_link_libraries(ceph-common ${ceph_common_deps})
 set_target_properties(ceph-common PROPERTIES
   SOVERSION 0
   INSTALL_RPATH "")
+if(WITH_STATIC_LIBSTDCXX)
+  # link libstdc++ into ceph-common to avoid including libstdc++ in every apps,
+  # to reduce the size of the app linking against ceph-common.
+  set_target_properties(ceph-common PROPERTIES
+    LINK_FLAGS "-static-libstdc++ -static-libgcc")
+endif()
 install(TARGETS ceph-common DESTINATION ${CMAKE_INSTALL_PKGLIBDIR})
 
 add_library(common_utf8 STATIC common/utf8.c)
@@ -828,7 +839,7 @@ set(ceph_mon_srcs
 add_executable(ceph-mon ${ceph_mon_srcs}
   $<TARGET_OBJECTS:common_texttable_obj>)
 add_dependencies(ceph-mon erasure_code_plugins)
-target_link_libraries(ceph-mon mon common os global-static common
+target_link_libraries(ceph-mon mon os global-static common
   ${EXTRALIBS}
   ${CMAKE_DL_LIBS})
 install(TARGETS ceph-mon DESTINATION bin)
@@ -914,9 +925,6 @@ endif()
 configure_file(${CMAKE_SOURCE_DIR}/src/ceph.in
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph @ONLY)
 
-configure_file(${CMAKE_SOURCE_DIR}/src/ceph-crush-location.in
-  ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-crush-location @ONLY)
-
 configure_file(${CMAKE_SOURCE_DIR}/src/init-ceph.in
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/init-ceph @ONLY)
 
@@ -932,7 +940,6 @@ endif()
 
 install(PROGRAMS
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph
-  ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-crush-location
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-post-file
   ${CMAKE_SOURCE_DIR}/src/ceph-run
   ${CMAKE_SOURCE_DIR}/src/ceph-rest-api
@@ -974,6 +981,10 @@ if(WITH_LIBCEPHFS)
   add_library(cephfs ${CEPH_SHARED} ${libcephfs_srcs})
   target_link_libraries(cephfs PRIVATE client ceph-common
     ${CRYPTO_LIBS} ${EXTRALIBS})
+  if(WITH_STATIC_LIBSTDCXX)
+    target_link_libraries(cephfs
+      INTERFACE "-static-libstdc++ -static-libgcc")
+  endif()
   if(ENABLE_SHARED)
     set_target_properties(cephfs PROPERTIES
       OUTPUT_NAME cephfs
@@ -994,7 +1005,7 @@ if(WITH_LIBCEPHFS)
     ceph_syn.cc
     client/SyntheticClient.cc)
   add_executable(ceph-syn ${ceph_syn_srcs})
-  target_link_libraries(ceph-syn client global-static common)
+  target_link_libraries(ceph-syn client global-static ceph-common)
 
   set(mount_ceph_srcs
     mount/mount.ceph.c)
@@ -1015,7 +1026,7 @@ if(WITH_FUSE)
     client/fuse_ll.cc)
   add_executable(ceph-fuse ${ceph_fuse_srcs})
   target_link_libraries(ceph-fuse ${ALLOC_LIBS} ${FUSE_LIBRARIES}
-    client common global-static)
+    client ceph-common global-static)
   set_target_properties(ceph-fuse PROPERTIES
     COMPILE_FLAGS "-I${FUSE_INCLUDE_DIRS}"
     INSTALL_RPATH "")

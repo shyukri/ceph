@@ -255,7 +255,7 @@ RGWRadosGetOmapKeysCR::RGWRadosGetOmapKeysCR(RGWRados *_store,
                                                 entries(_entries), max_entries(_max_entries), rval(0),
                                                 obj(_obj), cn(NULL)
 {
-  set_description() << "set omap keys dest=" << obj << " marker=" << marker;
+  set_description() << "get omap keys dest=" << obj << " marker=" << marker;
 }
 
 int RGWRadosGetOmapKeysCR::send_request() {
@@ -510,7 +510,7 @@ int RGWRadosBILogTrimCR::send_request()
   cls_rgw_bi_log_trim_op call;
   call.start_marker = std::move(start_marker);
   call.end_marker = std::move(end_marker);
-  ::encode(call, in);
+  encode(call, in);
 
   librados::ObjectWriteOperation op;
   op.exec(RGW_CLASS, RGW_BI_LOG_TRIM, in);

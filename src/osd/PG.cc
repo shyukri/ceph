@@ -90,7 +90,7 @@ static ostream& _prefix(std::ostream *_dout, T *t)
   return *_dout << t->gen_prefix();
 }
 
-MEMPOOL_DEFINE_OBJECT_FACTORY(PG::CephPeeringEvt, pg_peering_evt, osd);
+MEMPOOL_DEFINE_OBJECT_FACTORY(PGPeeringEvent, pg_peering_evt, osd);
 
 void PGStateHistory::enter(PG* pg, const utime_t entime, const char* state)
 {
@@ -224,55 +224,84 @@ void PG::dump_live_ids()
 #endif
 
 
-void PGPool::update(OSDMapRef map)
+void PGPool::update(CephContext *cct, OSDMapRef map)
 {
   const pg_pool_t *pi = map->get_pg_pool(id);
   assert(pi);
   info = *pi;
   auid = pi->auid;
   name = map->get_pool_name(id);
+
   bool updated = false;
   if ((map->get_epoch() != cached_epoch + 1) ||
       (pi->get_snap_epoch() == map->get_epoch())) {
     updated = true;
-    if (pi->maybe_updated_removed_snaps(cached_removed_snaps)) {
-      pi->build_removed_snaps(newly_removed_snaps);
-      if (cached_removed_snaps.subset_of(newly_removed_snaps)) {
+  }
+
+  if (map->require_osd_release >= CEPH_RELEASE_MIMIC) {
+    // mimic tracks removed_snaps_queue in the OSDmap and purged_snaps
+    // in the pg_info_t, with deltas for both in each OSDMap.  we don't
+    // need to (and can't) track it here.
+    cached_removed_snaps.clear();
+    newly_removed_snaps.clear();
+  } else {
+    // legacy (<= luminous) removed_snaps tracking
+    if (updated) {
+      if (pi->maybe_updated_removed_snaps(cached_removed_snaps)) {
+	pi->build_removed_snaps(newly_removed_snaps);
+	if (cached_removed_snaps.subset_of(newly_removed_snaps)) {
           interval_set<snapid_t> removed_snaps = newly_removed_snaps;
           newly_removed_snaps.subtract(cached_removed_snaps);
           cached_removed_snaps.swap(removed_snaps);
-      } else {
+	} else {
           lgeneric_subdout(cct, osd, 0) << __func__
-            << " cached_removed_snaps shrank from " << cached_removed_snaps
-            << " to " << newly_removed_snaps << dendl;
+		<< " cached_removed_snaps shrank from " << cached_removed_snaps
+		<< " to " << newly_removed_snaps << dendl;
           cached_removed_snaps.swap(newly_removed_snaps);
           newly_removed_snaps.clear();
+	}
+      } else {
+	newly_removed_snaps.clear();
       }
-    } else
+    } else {
+      /* 1) map->get_epoch() == cached_epoch + 1 &&
+       * 2) pi->get_snap_epoch() != map->get_epoch()
+       *
+       * From the if branch, 1 && 2 must be true.  From 2, we know that
+       * this map didn't change the set of removed snaps.  From 1, we
+       * know that our cached_removed_snaps matches the previous map.
+       * Thus, from 1 && 2, cached_removed snaps matches the current
+       * set of removed snaps and all we have to do is clear
+       * newly_removed_snaps.
+       */
       newly_removed_snaps.clear();
+    }
+    lgeneric_subdout(cct, osd, 20)
+      << "PGPool::update cached_removed_snaps "
+      << cached_removed_snaps
+      << " newly_removed_snaps "
+      << newly_removed_snaps
+      << " snapc " << snapc
+      << (updated ? " (updated)":" (no change)")
+      << dendl;
+    if (cct->_conf->osd_debug_verify_cached_snaps) {
+      interval_set<snapid_t> actual_removed_snaps;
+      pi->build_removed_snaps(actual_removed_snaps);
+      if (!(actual_removed_snaps == cached_removed_snaps)) {
+	lgeneric_derr(cct) << __func__
+		   << ": mismatch between the actual removed snaps "
+		   << actual_removed_snaps
+		   << " and pool.cached_removed_snaps "
+		   << " pool.cached_removed_snaps " << cached_removed_snaps
+		   << dendl;
+      }
+      assert(actual_removed_snaps == cached_removed_snaps);
+    }
+  }
+  if (info.is_pool_snaps_mode() && updated) {
     snapc = pi->get_snap_context();
-  } else {
-    /* 1) map->get_epoch() == cached_epoch + 1 &&
-     * 2) pi->get_snap_epoch() != map->get_epoch()
-     *
-     * From the if branch, 1 && 2 must be true.  From 2, we know that
-     * this map didn't change the set of removed snaps.  From 1, we
-     * know that our cached_removed_snaps matches the previous map.
-     * Thus, from 1 && 2, cached_removed snaps matches the current
-     * set of removed snaps and all we have to do is clear
-     * newly_removed_snaps.
-     */
-    newly_removed_snaps.clear();
   }
   cached_epoch = map->get_epoch();
-  lgeneric_subdout(cct, osd, 20)
-    << "PGPool::update cached_removed_snaps "
-    << cached_removed_snaps
-    << " newly_removed_snaps "
-    << newly_removed_snaps
-    << " snapc " << snapc
-    << (updated ? " (updated)":" (no change)")
-    << dendl;
 }
 
 PG::PG(OSDService *o, OSDMapRef curmap,
@@ -325,7 +354,8 @@ PG::PG(OSDService *o, OSDMapRef curmap,
   peer_features(CEPH_FEATURES_SUPPORTED_DEFAULT),
   acting_features(CEPH_FEATURES_SUPPORTED_DEFAULT),
   upacting_features(CEPH_FEATURES_SUPPORTED_DEFAULT),
-  last_epoch(0)
+  last_epoch(0),
+  last_require_osd_release(curmap->require_osd_release)
 {
 #ifdef PG_DEBUG_REFS
   osd->add_pgid(p, this);
@@ -1207,19 +1237,19 @@ void PG::calc_replicated_acting(
   set<pg_shard_t> *acting_backfill,
   ostream &ss)
 {
-  ss << "calc_acting newest update on osd." << auth_log_shard->first
+  pg_shard_t auth_log_shard_id = auth_log_shard->first;
+
+  ss << __func__ << " newest update on osd." << auth_log_shard_id
      << " with " << auth_log_shard->second
      << (restrict_to_up_acting ? " restrict_to_up_acting" : "") << std::endl;
-  pg_shard_t auth_log_shard_id = auth_log_shard->first;
   
   // select primary
-  map<pg_shard_t,pg_info_t>::const_iterator primary;
+  map<pg_shard_t,pg_info_t>::const_iterator primary = all_info.find(up_primary);
   if (up.size() &&
-      !all_info.find(up_primary)->second.is_incomplete() &&
-      all_info.find(up_primary)->second.last_update >=
+      !primary->second.is_incomplete() &&
+      primary->second.last_update >=
         auth_log_shard->second.log_tail) {
     ss << "up_primary: " << up_primary << ") selected as primary" << std::endl;
-    primary = all_info.find(up_primary); // prefer up[0], all thing being equal
   } else {
     assert(!auth_log_shard->second.is_incomplete());
     ss << "up[0] needs backfill, osd." << auth_log_shard_id
@@ -1227,7 +1257,7 @@ void PG::calc_replicated_acting(
     primary = auth_log_shard;
   }
 
-  ss << "calc_acting primary is osd." << primary->first
+  ss << __func__ << " primary is osd." << primary->first
      << " with " << primary->second << std::endl;
   want->push_back(primary->first.osd);
   acting_backfill->insert(primary->first);
@@ -1389,10 +1419,12 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
   map<pg_shard_t, pg_info_t> all_info(peer_info.begin(), peer_info.end());
   all_info[pg_whoami] = info;
 
-  for (map<pg_shard_t, pg_info_t>::iterator p = all_info.begin();
-       p != all_info.end();
-       ++p) {
-    dout(10) << "calc_acting osd." << p->first << " " << p->second << dendl;
+  if (cct->_conf->subsys.should_gather(dout_subsys, 10)) {
+    for (map<pg_shard_t, pg_info_t>::iterator p = all_info.begin();
+         p != all_info.end();
+         ++p) {
+      dout(10) << __func__ << "all_info osd." << p->first << " " << p->second << dendl;
+    }
   }
 
   map<pg_shard_t, pg_info_t>::const_iterator auth_log_shard =
@@ -1400,13 +1432,13 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
 
   if (auth_log_shard == all_info.end()) {
     if (up != acting) {
-      dout(10) << "choose_acting no suitable info found (incomplete backfills?),"
+      dout(10) << __func__ << " no suitable info found (incomplete backfills?),"
 	       << " reverting to up" << dendl;
       want_acting = up;
       vector<int> empty;
       osd->queue_want_pg_temp(info.pgid.pgid, empty);
     } else {
-      dout(10) << "choose_acting failed" << dendl;
+      dout(10) << __func__ << " failed" << dendl;
       assert(want_acting.empty());
     }
     return false;
@@ -1464,7 +1496,7 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
       (pool.info.is_erasure() ||
        !cct->_conf->osd_allow_recovery_below_min_size)) {
     want_acting.clear();
-    dout(10) << "choose_acting failed, below min size" << dendl;
+    dout(10) << __func__ << " failed, below min size" << dendl;
     return false;
   }
 
@@ -1473,12 +1505,12 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
     get_pgbackend()->get_is_recoverable_predicate());
   if (!(*recoverable_predicate)(have)) {
     want_acting.clear();
-    dout(10) << "choose_acting failed, not recoverable" << dendl;
+    dout(10) << __func__ << " failed, not recoverable" << dendl;
     return false;
   }
 
   if (want != acting) {
-    dout(10) << "choose_acting want " << want << " != acting " << acting
+    dout(10) << __func__ << " want " << want << " != acting " << acting
 	     << ", requesting pg_temp change" << dendl;
     want_acting = want;
 
@@ -1507,7 +1539,7 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
       ++i) {
     assert(stray_set.find(*i) == stray_set.end());
   }
-  dout(10) << "choose_acting want " << want << " (== acting) backfill_targets " 
+  dout(10) << __func__ << " want " << want << " (== acting) backfill_targets "
 	   << want_backfill << dendl;
   return true;
 }
@@ -1601,20 +1633,36 @@ void PG::activate(ObjectStore::Transaction& t,
       get_osdmap()->get_epoch(),
       activation_epoch));
   
-  // initialize snap_trimq
   if (is_primary()) {
-    dout(20) << "activate - purged_snaps " << info.purged_snaps
-	     << " cached_removed_snaps " << pool.cached_removed_snaps << dendl;
-    snap_trimq = pool.cached_removed_snaps;
-    interval_set<snapid_t> intersection;
-    intersection.intersection_of(snap_trimq, info.purged_snaps);
-    if (intersection == info.purged_snaps) {
-      snap_trimq.subtract(info.purged_snaps);
+    // initialize snap_trimq
+    if (get_osdmap()->require_osd_release < CEPH_RELEASE_MIMIC) {
+      dout(20) << "activate - purged_snaps " << info.purged_snaps
+	       << " cached_removed_snaps " << pool.cached_removed_snaps
+	       << dendl;
+      snap_trimq = pool.cached_removed_snaps;
     } else {
-        dout(0) << "warning: info.purged_snaps (" << info.purged_snaps
-                << ") is not a subset of pool.cached_removed_snaps ("
-                << pool.cached_removed_snaps << ")" << dendl;
-        snap_trimq.subtract(intersection);
+      auto& removed_snaps_queue = get_osdmap()->get_removed_snaps_queue();
+      auto p = removed_snaps_queue.find(info.pgid.pgid.pool());
+      snap_trimq.clear();
+      if (p != removed_snaps_queue.end()) {
+	dout(20) << "activate - purged_snaps " << info.purged_snaps
+		 << " removed_snaps " << p->second
+		 << dendl;
+	for (auto q : p->second) {
+	  snap_trimq.insert(q.first, q.second);
+	}
+      }
+    }
+    interval_set<snapid_t> purged;
+    purged.intersection_of(snap_trimq, info.purged_snaps);
+    snap_trimq.subtract(purged);
+
+    if (get_osdmap()->require_osd_release >= CEPH_RELEASE_MIMIC) {
+      // adjust purged_snaps: PG may have been inactive while snaps were pruned
+      // from the removed_snaps_queue in the osdmap.  update local purged_snaps
+      // reflect only those snaps that we thought were pruned and were still in
+      // the queue.
+      info.purged_snaps.swap(purged);
     }
   }
 
@@ -1907,9 +1955,10 @@ void PG::_activate_committed(epoch_t epoch, epoch_t activation_epoch)
     dout(10) << "_activate_committed " << epoch
 	     << ", that was an old interval" << dendl;
   } else if (is_primary()) {
+    assert(!peer_activated.count(pg_whoami));
     peer_activated.insert(pg_whoami);
     dout(10) << "_activate_committed " << epoch
-	     << " peer_activated now " << peer_activated 
+	     << " peer_activated now " << peer_activated
 	     << " last_interval_started " << info.history.last_interval_started
 	     << " last_epoch_started " << info.history.last_epoch_started
 	     << " same_interval_since " << info.history.same_interval_since << dendl;
@@ -1967,8 +2016,8 @@ void PG::all_activated_and_committed()
   assert(blocked_by.empty());
 
   queue_peering_event(
-    CephPeeringEvtRef(
-      std::make_shared<CephPeeringEvt>(
+    PGPeeringEventRef(
+      std::make_shared<PGPeeringEvent>(
         get_osdmap()->get_epoch(),
         get_osdmap()->get_epoch(),
         AllReplicasActivated())));
@@ -2621,6 +2670,7 @@ void PG::_update_calc_stats()
   info.stats.ondisk_log_size = info.stats.log_size;
   info.stats.log_start = pg_log.get_tail();
   info.stats.ondisk_log_start = pg_log.get_tail();
+  info.stats.snaptrimq_len = snap_trimq.size();
 
   // If actingset is larger then upset we will have misplaced,
   // so we will report based on actingset size.
@@ -2816,6 +2866,22 @@ void PG::publish_stats_to_osd()
   pre_publish.stats.add(unstable_stats);
   utime_t cutoff = now;
   cutoff -= cct->_conf->osd_pg_stat_report_interval_max;
+
+  if (get_osdmap()->require_osd_release >= CEPH_RELEASE_MIMIC) {
+    // share (some of) our purged_snaps via the pg_stats. limit # of intervals
+    // because we don't want to make the pg_stat_t structures too expensive.
+    unsigned max = cct->_conf->get_val<uint64_t>("osd_max_snap_prune_intervals_per_epoch");
+    unsigned num = 0;
+    auto i = info.purged_snaps.begin();
+    while (num < max && i != info.purged_snaps.end()) {
+      pre_publish.purged_snaps.insert(i.get_start(), i.get_len());
+      ++num;
+      ++i;
+    }
+    dout(20) << __func__ << " reporting purged_snaps "
+	     << pre_publish.purged_snaps << dendl;
+  }
+
   if (pg_stats_publish_valid && pre_publish == pg_stats_publish &&
       info.stats.last_fresh > cutoff) {
     dout(15) << "publish_stats_to_osd " << pg_stats_publish.reported_epoch
@@ -2936,7 +3002,7 @@ void PG::upgrade(ObjectStore *store)
   if (info_struct_v < latest_struct_v) {
     map<string,bufferlist> v;
     __u8 ver = latest_struct_v;
-    ::encode(ver, v[infover_key]);
+    encode(ver, v[infover_key]);
     t.omap_setkeys(coll, pgmeta_oid, v);
   }
 
@@ -2974,7 +3040,7 @@ int PG::_prepare_write_info(CephContext* cct,
 			    PerfCounters *logger)
 {
   if (dirty_epoch) {
-    ::encode(epoch, (*km)[epoch_key]);
+    encode(epoch, (*km)[epoch_key]);
   }
 
   if (logger)
@@ -2988,7 +3054,7 @@ int PG::_prepare_write_info(CephContext* cct,
     bool did = fast.try_apply_to(&last_written_info);
     assert(did);  // we verified last_update increased above
     if (info == last_written_info) {
-      ::encode(fast, (*km)[fastinfo_key]);
+      encode(fast, (*km)[fastinfo_key]);
       if (logger)
 	logger->inc(l_osd_pg_fastinfo);
       return 0;
@@ -3012,14 +3078,14 @@ int PG::_prepare_write_info(CephContext* cct,
   // info.  store purged_snaps separately.
   interval_set<snapid_t> purged_snaps;
   purged_snaps.swap(info.purged_snaps);
-  ::encode(info, (*km)[info_key]);
+  encode(info, (*km)[info_key]);
   purged_snaps.swap(info.purged_snaps);
 
   if (dirty_big_info) {
     // potentially big stuff
     bufferlist& bigbl = (*km)[biginfo_key];
-    ::encode(past_intervals, bigbl);
-    ::encode(info.purged_snaps, bigbl);
+    encode(past_intervals, bigbl);
+    encode(info.purged_snaps, bigbl);
     //dout(20) << "write_info bigbl " << bigbl.length() << dendl;
     if (logger)
       logger->inc(l_osd_pg_biginfo);
@@ -3043,8 +3109,8 @@ void PG::_init(ObjectStore::Transaction& t, spg_t pgid, const pg_pool_t *pool)
     bufferlist hint;
     uint32_t pg_num = pool->get_pg_num();
     uint64_t expected_num_objects_pg = pool->expected_num_objects / pg_num;
-    ::encode(pg_num, hint);
-    ::encode(expected_num_objects_pg, hint);
+    encode(pg_num, hint);
+    encode(expected_num_objects_pg, hint);
     uint32_t hint_type = ObjectStore::Transaction::COLL_HINT_EXPECTED_NUM_OBJECTS;
     t.collection_hint(coll, hint_type, hint);
   }
@@ -3053,7 +3119,7 @@ void PG::_init(ObjectStore::Transaction& t, spg_t pgid, const pg_pool_t *pool)
   t.touch(coll, pgmeta_oid);
   map<string,bufferlist> values;
   __u8 struct_v = latest_struct_v;
-  ::encode(struct_v, values[infover_key]);
+  encode(struct_v, values[infover_key]);
   t.omap_setkeys(coll, pgmeta_oid, values);
 }
 
@@ -3124,12 +3190,12 @@ int PG::peek_map_epoch(ObjectStore *store,
     // sanity check version
     bufferlist::iterator bp = values[infover_key].begin();
     __u8 struct_v = 0;
-    ::decode(struct_v, bp);
+    decode(struct_v, bp);
     assert(struct_v >= 8);
 
     // get epoch
     bp = values[epoch_key].begin();
-    ::decode(cur_epoch, bp);
+    decode(cur_epoch, bp);
   } else {
     // probably bug 10617; see OSD::load_pgs()
     return -1;
@@ -3336,20 +3402,20 @@ int PG::read_info(
 	 values.size() == 4);
 
   bufferlist::iterator p = values[infover_key].begin();
-  ::decode(struct_v, p);
+  decode(struct_v, p);
   assert(struct_v >= 10);
 
   p = values[info_key].begin();
-  ::decode(info, p);
+  decode(info, p);
 
   p = values[biginfo_key].begin();
-  ::decode(past_intervals, p);
-  ::decode(info.purged_snaps, p);
+  decode(past_intervals, p);
+  decode(info.purged_snaps, p);
 
   p = values[fastinfo_key].begin();
   if (!p.end()) {
     pg_fast_info_t fast;
-    ::decode(fast, p);
+    decode(fast, p);
     fast.try_apply_to(&info);
   }
   return 0;
@@ -3462,7 +3528,7 @@ void PG::update_snap_map(
 	bufferlist snapbl = i->snaps;
 	bufferlist::iterator p = snapbl.begin();
 	try {
-	  ::decode(snaps, p);
+	  decode(snaps, p);
 	} catch (...) {
 	  snaps.clear();
 	}
@@ -3494,8 +3560,8 @@ void PG::update_snap_map(
  */
 void PG::filter_snapc(vector<snapid_t> &snaps)
 {
-  //nothing needs to trim, we can return immediately
-  if(snap_trimq.empty() && info.purged_snaps.empty())
+  // nothing needs to trim, we can return immediately
+  if (snap_trimq.empty() && info.purged_snaps.empty())
     return;
 
   bool filtering = false;
@@ -4010,7 +4076,7 @@ void PG::_scan_snaps(ScrubMap &smap)
       bl.push_back(o.attrs[SS_ATTR]);
       auto p = bl.begin();
       try {
-	::decode(snapset, p);
+	decode(snapset, p);
       } catch(...) {
 	continue;
       }
@@ -4062,6 +4128,7 @@ void PG::_scan_snaps(ScrubMap &smap)
 			    << " oid " << hoid << " snaps missing in mapper"
 			    << ", should be: "
 			    << obj_snaps
+			     << " was " << cur_snaps << " r " << r
 			    << "...repaired";
 	}
 	snap_mapper.add_oid(hoid, obj_snaps, &_t);
@@ -4106,7 +4173,7 @@ void PG::_repair_oinfo_oid(ScrubMap &smap)
       // Fix object info
       oi.soid = hoid;
       bl.clear();
-      ::encode(oi, bl, get_osdmap()->get_features(CEPH_ENTITY_TYPE_OSD, nullptr));
+      encode(oi, bl, get_osdmap()->get_features(CEPH_ENTITY_TYPE_OSD, nullptr));
 
       bufferptr bp(bl.c_str(), bl.length());
       o.attrs[OI_ATTR] = bp;
@@ -4138,6 +4205,7 @@ int PG::build_scrub_map_chunk(
   // objects
   vector<hobject_t> ls;
   vector<ghobject_t> rollback_obs;
+  osr->flush();
   int ret = get_pgbackend()->objects_list_range(
     start,
     end,
@@ -4191,7 +4259,7 @@ void PG::repair_object(
   object_info_t oi;
   try {
     bufferlist::iterator bliter = bv.begin();
-    ::decode(oi, bliter);
+    decode(oi, bliter);
   } catch (...) {
     dout(0) << __func__ << ": Need version of replica, bad object_info_t: " << soid << dendl;
     assert(0);
@@ -4272,7 +4340,7 @@ void PG::replica_scrub(
     spg_t(info.pgid.pgid, get_primary().shard),
     msg->map_epoch,
     pg_whoami);
-  ::encode(map, reply->get_data());
+  encode(map, reply->get_data());
   osd->send_message_osd_cluster(reply, msg->get_connection());
 }
 
@@ -4511,6 +4579,7 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
           hobject_t start = scrubber.start;
 	  hobject_t candidate_end;
 	  vector<hobject_t> objects;
+	  osr->flush();
 	  ret = get_pgbackend()->objects_list_partial(
 	    start,
 	    min,
@@ -4989,8 +5058,8 @@ void PG::scrub_finish()
 
   if (has_error) {
     queue_peering_event(
-      CephPeeringEvtRef(
-	std::make_shared<CephPeeringEvt>(
+      PGPeeringEventRef(
+	std::make_shared<PGPeeringEvent>(
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
 	  DoRecovery())));
@@ -5014,22 +5083,23 @@ void PG::share_pg_info()
        i != actingbackfill.end();
        ++i) {
     if (*i == pg_whoami) continue;
-    pg_shard_t peer = *i;
-    if (peer_info.count(peer)) {
-      peer_info[peer].last_epoch_started = info.last_epoch_started;
-      peer_info[peer].last_interval_started = info.last_interval_started;
-      peer_info[peer].history.merge(info.history);
+    auto pg_shard = *i;
+    auto peer = peer_info.find(pg_shard);
+    if (peer != peer_info.end()) {
+      peer->second.last_epoch_started = info.last_epoch_started;
+      peer->second.last_interval_started = info.last_interval_started;
+      peer->second.history.merge(info.history);
     }
     MOSDPGInfo *m = new MOSDPGInfo(get_osdmap()->get_epoch());
     m->pg_list.push_back(
       make_pair(
 	pg_notify_t(
-	  peer.shard, pg_whoami.shard,
+	  pg_shard.shard, pg_whoami.shard,
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
 	  info),
-	PastIntervals()));
-    osd->send_message_osd_cluster(peer.osd, m, get_osdmap()->get_epoch());
+	past_intervals));
+    osd->send_message_osd_cluster(pg_shard.osd, m, get_osdmap()->get_epoch());
   }
 }
 
@@ -5253,7 +5323,7 @@ struct FlushState {
   ~FlushState() {
     pg->lock();
     if (!pg->pg_has_reset_since(epoch))
-      pg->queue_flushed(epoch);
+      pg->on_flushed();
     pg->unlock();
   }
 };
@@ -5513,37 +5583,9 @@ void PG::proc_primary_info(ObjectStore::Transaction &t, const pg_info_t &oinfo)
 
   update_history(oinfo.history);
 
-  if (last_complete_ondisk.epoch >= info.history.last_epoch_started) {
-    // DEBUG: verify that the snaps are empty in snap_mapper
-    if (cct->_conf->osd_debug_verify_snaps_on_info) {
-      interval_set<snapid_t> p;
-      p.union_of(oinfo.purged_snaps, info.purged_snaps);
-      p.subtract(info.purged_snaps);
-      if (!p.empty()) {
-	for (interval_set<snapid_t>::iterator i = p.begin();
-	     i != p.end();
-	     ++i) {
-	  for (snapid_t snap = i.get_start();
-	       snap != i.get_len() + i.get_start();
-	       ++snap) {
-	    vector<hobject_t> hoids;
-	    int r = snap_mapper.get_next_objects_to_trim(snap, 1, &hoids);
-	    if (r != 0 && r != -ENOENT) {
-	      derr << __func__ << ": snap_mapper get_next_object_to_trim returned "
-		   << cpp_strerror(r) << dendl;
-	      ceph_abort();
-	    } else if (r != -ENOENT) {
-	      assert(!hoids.empty());
-	      derr << __func__ << ": snap_mapper get_next_object_to_trim returned "
-		   << cpp_strerror(r) << " for object "
-		   << hoids[0] << " on snap " << snap
-		   << " which should have been fully trimmed " << dendl;
-	      ceph_abort();
-	    }
-	  }
-	}
-      }
-    }
+  if (!(info.purged_snaps == oinfo.purged_snaps)) {
+    dout(10) << __func__ << " updating purged_snaps to " << oinfo.purged_snaps
+	     << dendl;
     info.purged_snaps = oinfo.purged_snaps;
     dirty_info = true;
     dirty_big_info = true;
@@ -5556,6 +5598,8 @@ ostream& operator<<(ostream& out, const PG& pg)
       << " " << pg.up;
   if (pg.acting != pg.up)
     out << "/" << pg.acting;
+  if (pg.is_ec_pg())
+    out << "p" << pg.get_primary();
   out << " r=" << pg.get_role();
   out << " lpr=" << pg.get_last_peering_reset();
 
@@ -5620,8 +5664,23 @@ ostream& operator<<(ostream& out, const PG& pg)
 	out << " u=" << unfound;
     }
   }
-  if (pg.snap_trimq.size())
-    out << " snaptrimq=" << pg.snap_trimq;
+  if (!pg.snap_trimq.empty()) {
+    out << " trimq=";
+    // only show a count if the set is large
+    if (pg.snap_trimq.num_intervals() > 16) {
+      out << pg.snap_trimq.size();
+    } else {
+      out << pg.snap_trimq;
+    }
+  }
+  if (!pg.info.purged_snaps.empty()) {
+    out << " ps="; // snap trim queue / purged snaps
+    if (pg.info.purged_snaps.num_intervals() > 16) {
+      out << pg.info.purged_snaps.size();
+    } else {
+      out << pg.info.purged_snaps;
+    }
+  }
 
   out << "]";
 
@@ -5680,14 +5739,15 @@ bool PG::can_discard_replica_op(OpRequestRef& op)
   // connection to it when handling the new osdmap marking it down, and also
   // resets the messenger sesssion when the replica reconnects. to avoid the
   // out-of-order replies, the messages from that replica should be discarded.
-  if (osd->get_osdmap()->is_down(from))
+  OSDMapRef next_map = osd->get_next_osdmap();
+  if (next_map->is_down(from))
     return true;
   /* Mostly, this overlaps with the old_peering_msg
    * condition.  An important exception is pushes
    * sent by replicas not in the acting set, since
    * if such a replica goes down it does not cause
    * a new interval. */
-  if (get_osdmap()->get_down_at(from) >= m->map_epoch)
+  if (next_map->get_down_at(from) >= m->map_epoch)
     return true;
 
   // same pg?
@@ -5786,19 +5846,15 @@ void PG::take_waiters()
 {
   dout(10) << "take_waiters" << dendl;
   requeue_map_waiters();
-  for (list<CephPeeringEvtRef>::iterator i = peering_waiters.begin();
-       i != peering_waiters.end();
-       ++i) osd->queue_for_peering(this);
-  peering_queue.splice(peering_queue.begin(), peering_waiters,
-		       peering_waiters.begin(), peering_waiters.end());
+  for (auto i = peering_waiters.rbegin();
+       i != peering_waiters.rend();
+       ++i) {
+    osd->osd->enqueue_peering_evt_front(this, *i);
+  }
 }
 
-void PG::process_peering_event(RecoveryCtx *rctx)
+void PG::do_peering_event(PGPeeringEventRef evt, RecoveryCtx *rctx)
 {
-  assert(!peering_queue.empty());
-  CephPeeringEvtRef evt = peering_queue.front();
-  peering_queue.pop_front();
-
   dout(10) << __func__ << ": " << evt->get_desc() << dendl;
   if (!have_same_or_newer_map(evt->get_epoch_sent())) {
     dout(10) << "deferring event " << evt->get_desc() << dendl;
@@ -5811,12 +5867,11 @@ void PG::process_peering_event(RecoveryCtx *rctx)
   write_if_dirty(*rctx->transaction);
 }
 
-void PG::queue_peering_event(CephPeeringEvtRef evt)
+void PG::queue_peering_event(PGPeeringEventRef evt)
 {
   if (old_peering_evt(evt))
     return;
-  peering_queue.push_back(evt);
-  osd->queue_for_peering(this);
+  osd->osd->enqueue_peering_evt(this, evt);
 }
 
 void PG::queue_null(epoch_t msg_epoch,
@@ -5824,16 +5879,8 @@ void PG::queue_null(epoch_t msg_epoch,
 {
   dout(10) << "null" << dendl;
   queue_peering_event(
-    CephPeeringEvtRef(std::make_shared<CephPeeringEvt>(msg_epoch, query_epoch,
+    PGPeeringEventRef(std::make_shared<PGPeeringEvent>(msg_epoch, query_epoch,
 					 NullEvt())));
-}
-
-void PG::queue_flushed(epoch_t e)
-{
-  dout(10) << "flushed" << dendl;
-  queue_peering_event(
-    CephPeeringEvtRef(std::make_shared<CephPeeringEvt>(e, e,
-					 FlushedEvt())));
 }
 
 void PG::queue_query(epoch_t msg_epoch,
@@ -5842,7 +5889,7 @@ void PG::queue_query(epoch_t msg_epoch,
 {
   dout(10) << "handle_query " << q << " from replica " << from << dendl;
   queue_peering_event(
-    CephPeeringEvtRef(std::make_shared<CephPeeringEvt>(msg_epoch, query_epoch,
+    PGPeeringEventRef(std::make_shared<PGPeeringEvent>(msg_epoch, query_epoch,
 					 MQuery(from, q, query_epoch))));
 }
 
@@ -5858,16 +5905,16 @@ void PG::find_unfound(epoch_t queued, RecoveryCtx *rctx)
   if (rctx->query_map->empty()) {
     string action;
     if (state_test(PG_STATE_BACKFILLING)) {
-      auto evt = PG::CephPeeringEvtRef(
-	new PG::CephPeeringEvt(
+      auto evt = PGPeeringEventRef(
+	new PGPeeringEvent(
 	  queued,
 	  queued,
 	  PG::UnfoundBackfill()));
       queue_peering_event(evt);
       action = "in backfill";
     } else if (state_test(PG_STATE_RECOVERING)) {
-      auto evt = PG::CephPeeringEvtRef(
-	new PG::CephPeeringEvt(
+      auto evt = PGPeeringEventRef(
+	new PGPeeringEvent(
 	  queued,
 	  queued,
 	  PG::UnfoundRecovery()));
@@ -5896,20 +5943,9 @@ void PG::handle_advance_map(
 	   << " -- " << up_primary << "/" << acting_primary
 	   << dendl;
   update_osdmap_ref(osdmap);
-  pool.update(osdmap);
-  if (cct->_conf->osd_debug_verify_cached_snaps) {
-    interval_set<snapid_t> actual_removed_snaps;
-    const pg_pool_t *pi = osdmap->get_pg_pool(info.pgid.pool());
-    assert(pi);
-    pi->build_removed_snaps(actual_removed_snaps);
-    if (!(actual_removed_snaps == pool.cached_removed_snaps)) {
-      derr << __func__ << ": mismatch between the actual removed snaps "
-	   << actual_removed_snaps << " and pool.cached_removed_snaps "
-	   << " pool.cached_removed_snaps " << pool.cached_removed_snaps
-	   << dendl;
-    }
-    assert(actual_removed_snaps == pool.cached_removed_snaps);
-  }
+
+  pool.update(cct, osdmap);
+
   AdvMap evt(
     osdmap, lastmap, newup, up_primary,
     newacting, acting_primary);
@@ -5918,6 +5954,7 @@ void PG::handle_advance_map(
     on_pool_change();
     update_store_with_options();
   }
+  last_require_osd_release = osdmap->require_osd_release;
 }
 
 void PG::handle_activate_map(RecoveryCtx *rctx)
@@ -6015,6 +6052,13 @@ PG::RecoveryState::Initial::Initial(my_context ctx)
   context< RecoveryMachine >().log_enter(state_name);
 }
 
+boost::statechart::result PG::RecoveryState::Initial::react(const Initialize& l)
+{
+  PG *pg = context< RecoveryMachine >().pg;
+  pg->update_store_with_options();
+  return transit< Reset >();
+}
+
 boost::statechart::result PG::RecoveryState::Initial::react(const Load& l)
 {
   PG *pg = context< RecoveryMachine >().pg;
@@ -6078,16 +6122,6 @@ PG::RecoveryState::Started::react(const IntervalFlush&)
   return discard_event();
 }
 
-
-boost::statechart::result
-PG::RecoveryState::Started::react(const FlushedEvt&)
-{
-  PG *pg = context< RecoveryMachine >().pg;
-  pg->on_flushed();
-  return discard_event();
-}
-
-
 boost::statechart::result PG::RecoveryState::Started::react(const AdvMap& advmap)
 {
   PG *pg = context< RecoveryMachine >().pg;
@@ -6136,14 +6170,6 @@ PG::RecoveryState::Reset::Reset(my_context ctx)
 
   pg->flushes_in_progress = 0;
   pg->set_last_peering_reset();
-}
-
-boost::statechart::result
-PG::RecoveryState::Reset::react(const FlushedEvt&)
-{
-  PG *pg = context< RecoveryMachine >().pg;
-  pg->on_flushed();
-  return discard_event();
 }
 
 boost::statechart::result
@@ -7258,8 +7284,99 @@ PG::RecoveryState::Active::Active(my_context ctx)
 boost::statechart::result PG::RecoveryState::Active::react(const AdvMap& advmap)
 {
   PG *pg = context< RecoveryMachine >().pg;
+  if (pg->should_restart_peering(
+	advmap.up_primary,
+	advmap.acting_primary,
+	advmap.newup,
+	advmap.newacting,
+	advmap.lastmap,
+	advmap.osdmap)) {
+    ldout(pg->cct, 10) << "Active advmap interval change, fast return" << dendl;
+    return forward_event();
+  }
   ldout(pg->cct, 10) << "Active advmap" << dendl;
-  if (!pg->pool.newly_removed_snaps.empty()) {
+
+  if (advmap.osdmap->require_osd_release >= CEPH_RELEASE_MIMIC) {
+    const auto& new_removed_snaps = advmap.osdmap->get_new_removed_snaps();
+    auto i = new_removed_snaps.find(pg->info.pgid.pool());
+    if (i != new_removed_snaps.end()) {
+      bool bad = false;
+      for (auto j : i->second) {
+	if (pg->snap_trimq.intersects(j.first, j.second)) {
+	  decltype(pg->snap_trimq) added, overlap;
+	  added.insert(j.first, j.second);
+	  overlap.intersection_of(pg->snap_trimq, added);
+	  if (pg->last_require_osd_release < CEPH_RELEASE_MIMIC) {
+	    lderr(pg->cct) << __func__ << " removed_snaps already contains "
+			   << overlap << ", but this is the first mimic+ osdmap,"
+			   << " so it's expected" << dendl;
+	  } else {
+	    lderr(pg->cct) << __func__ << " removed_snaps already contains "
+			   << overlap << dendl;
+	    bad = true;
+	  }
+	  pg->snap_trimq.union_of(added);
+	} else {
+	  pg->snap_trimq.insert(j.first, j.second);
+	}
+      }
+      if (pg->last_require_osd_release < CEPH_RELEASE_MIMIC) {
+	// at upgrade, we report *all* previously removed snaps as removed in
+	// the first mimic epoch.  remove the ones we previously divined were
+	// removed (and subsequently purged) from the trimq.
+	lderr(pg->cct) << __func__ << " first mimic map, filtering purged_snaps"
+		       << " from new removed_snaps" << dendl;
+	pg->snap_trimq.subtract(pg->info.purged_snaps);
+      }
+      ldout(pg->cct,10) << __func__ << " new removed_snaps " << i->second
+			<< ", snap_trimq now " << pg->snap_trimq << dendl;
+      assert(!bad || !pg->cct->_conf->osd_debug_verify_cached_snaps);
+      pg->dirty_info = true;
+      pg->dirty_big_info = true;
+    }
+
+    const auto& new_purged_snaps = advmap.osdmap->get_new_purged_snaps();
+    auto j = new_purged_snaps.find(pg->info.pgid.pool());
+    if (j != new_purged_snaps.end()) {
+      bool bad = false;
+      for (auto k : j->second) {
+	if (!pg->info.purged_snaps.contains(k.first, k.second)) {
+	  decltype(pg->info.purged_snaps) rm, overlap;
+	  rm.insert(k.first, k.second);
+	  overlap.intersection_of(pg->info.purged_snaps, rm);
+	  lderr(pg->cct) << __func__ << " purged_snaps does not contain "
+			 << rm << ", only " << overlap << dendl;
+	  pg->info.purged_snaps.subtract(overlap);
+	  // This can currently happen in the normal (if unlikely) course of
+	  // events.  Because adding snaps to purged_snaps does not increase
+	  // the pg version or add a pg log entry, we don't reliably propagate
+	  // purged_snaps additions to other OSDs.
+	  // One example:
+	  //  - purge S
+	  //  - primary and replicas update purged_snaps
+	  //  - no object updates
+	  //  - pg mapping changes, new primary on different node
+	  //  - new primary pg version == eversion_t(), so info is not
+	  //    propagated.
+     	  //bad = true;
+	} else {
+	  pg->info.purged_snaps.erase(k.first, k.second);
+	}
+      }
+      ldout(pg->cct,10) << __func__ << " new purged_snaps " << j->second
+			<< ", now " << pg->info.purged_snaps << dendl;
+      assert(!bad || !pg->cct->_conf->osd_debug_verify_cached_snaps);
+      pg->dirty_info = true;
+      pg->dirty_big_info = true;
+    }
+    if (pg->dirty_big_info) {
+      // share updated purged_snaps to mgr/mon so that we (a) stop reporting
+      // purged snaps and (b) perhaps share more snaps that we have purged
+      // but didn't fit in pg_stat_t.
+      pg->publish_stats_to_osd();
+      pg->share_pg_info();
+    }
+  } else if (!pg->pool.newly_removed_snaps.empty()) {
     pg->snap_trimq.union_of(pg->pool.newly_removed_snaps);
     ldout(pg->cct, 10) << *pg << " snap_trimq now " << pg->snap_trimq << dendl;
     pg->dirty_info = true;
@@ -7381,7 +7498,8 @@ boost::statechart::result PG::RecoveryState::Active::react(const MInfoRec& infoe
   // don't update history (yet) if we are active and primary; the replica
   // may be telling us they have activated (and committed) but we can't
   // share that until _everyone_ does the same.
-  if (pg->is_actingbackfill(infoevt.from)) {
+  if (pg->is_actingbackfill(infoevt.from) &&
+      pg->peer_activated.count(infoevt.from) == 0) {
     ldout(pg->cct, 10) << " peer osd." << infoevt.from
 		       << " activated and committed" << dendl;
     pg->peer_activated.insert(infoevt.from);
@@ -7406,9 +7524,9 @@ boost::statechart::result PG::RecoveryState::Active::react(const MLogRec& logevt
     pg->peer_missing[logevt.from],
     logevt.from,
     context< RecoveryMachine >().get_recovery_ctx());
-  if (pg->is_peered() &&
-      got_missing)
-    pg->queue_recovery();
+  if (got_missing) {
+    post_event(DoRecovery());
+  }
   return discard_event();
 }
 

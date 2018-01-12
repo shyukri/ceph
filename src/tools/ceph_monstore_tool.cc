@@ -24,6 +24,7 @@
 #include "auth/cephx/CephxKeyServer.h"
 #include "global/global_init.h"
 #include "include/stringify.h"
+#include "mgr/mgr_commands.h"
 #include "mon/AuthMonitor.h"
 #include "mon/MonitorDBStore.h"
 #include "mon/Paxos.h"
@@ -34,7 +35,6 @@
 #include "crush/CrushCompiler.h"
 
 namespace po = boost::program_options;
-using namespace std;
 
 class TraceIter {
   int fd;
@@ -71,10 +71,10 @@ public:
     }
     bufferlist::iterator bliter = bl.begin();
     uint8_t ver, ver2;
-    ::decode(ver, bliter);
-    ::decode(ver2, bliter);
+    decode(ver, bliter);
+    decode(ver2, bliter);
     uint32_t len;
-    ::decode(len, bliter);
+    decode(len, bliter);
     r = bl.read_fd(fd, len);
     if (r < 0) {
       std::cerr << "Got error: " << cpp_strerror(r) << " on read_fd"
@@ -478,7 +478,7 @@ int inflate_pgmap(MonitorDBStore& st, unsigned n, bool can_be_trimmed) {
     bufferlist pg_bl = i->value();
     pg_stat_t ps;
     bufferlist::iterator p = pg_bl.begin();
-    ::decode(ps, p);
+    decode(ps, p);
     // will update the last_epoch_clean of all the pgs.
     pg_stat[pgid] = ps;
   }
@@ -491,17 +491,17 @@ int inflate_pgmap(MonitorDBStore& st, unsigned n, bool can_be_trimmed) {
     bufferlist dirty_pgs;
     for (ceph::unordered_map<pg_t, pg_stat_t>::iterator ps = pg_stat.begin();
 	 ps != pg_stat.end(); ++ps) {
-      ::encode(ps->first, dirty_pgs);
+      encode(ps->first, dirty_pgs);
       if (!can_be_trimmed) {
 	ps->second.last_epoch_clean = first;
       }
-      ::encode(ps->second, dirty_pgs);
+      encode(ps->second, dirty_pgs);
     }
     utime_t inc_stamp = ceph_clock_now();
-    ::encode(inc_stamp, trans_bl);
+    encode(inc_stamp, trans_bl);
     ::encode_destructively(dirty_pgs, trans_bl);
     bufferlist dirty_osds;
-    ::encode(dirty_osds, trans_bl);
+    encode(dirty_osds, trans_bl);
     txn->put("pgmap", ++ver, trans_bl);
     // update the db in batch
     if (txn->size() > 1024) {
@@ -529,7 +529,7 @@ static int update_auth(MonitorDBStore& st, const string& keyring_path)
 
   bufferlist bl;
   __u8 v = 1;
-  ::encode(v, bl);
+  encode(v, bl);
 
   for (const auto& k : keyring.get_keys()) {
     KeyServerData::Incremental auth_inc;
@@ -543,7 +543,7 @@ static int update_auth(MonitorDBStore& st, const string& keyring_path)
 
     AuthMonitor::Incremental inc;
     inc.inc_type = AuthMonitor::AUTH_DATA;
-    ::encode(auth_inc, inc.auth_data);
+    encode(auth_inc, inc.auth_data);
     inc.auth_type = CEPH_AUTH_CEPHX;
 
     inc.encode(bl, CEPH_FEATURES_ALL);
@@ -591,6 +591,39 @@ static int update_monitor(MonitorDBStore& st)
   return 0;
 }
 
+// rebuild
+//  - mgr
+//  - mgr_command_desc
+static int update_mgrmap(MonitorDBStore& st)
+{
+  auto t = make_shared<MonitorDBStore::Transaction>();
+
+  {
+    MgrMap map;
+    // mgr expects epoch > 1
+    map.epoch++;
+    auto initial_modules =
+      get_str_vec(g_ceph_context->_conf->get_val<string>("mgr_initial_modules"));
+    copy(begin(initial_modules),
+	 end(initial_modules),
+	 inserter(map.modules, end(map.modules)));
+    bufferlist bl;
+    map.encode(bl, CEPH_FEATURES_ALL);
+    t->put("mgr", map.epoch, bl);
+    t->put("mgr", "last_committed", map.epoch);
+  }
+  {
+    auto mgr_command_descs = mgr_commands;
+    for (auto& c : mgr_command_descs) {
+      c.set_flag(MonCommand::FLAG_MGR);
+    }
+    bufferlist bl;
+    encode(mgr_command_descs, bl);
+    t->put("mgr_command_desc", "", bl);
+  }
+  return st.apply_transaction(t);
+}
+
 static int update_paxos(MonitorDBStore& st)
 {
   // build a pending paxos proposal from all non-permanent k/v pairs. once the
@@ -601,6 +634,7 @@ static int update_paxos(MonitorDBStore& st)
   {
     MonitorDBStore::Transaction t;
     vector<string> prefixes = {"auth", "osdmap",
+			       "mgr", "mgr_command_desc",
 			       "pgmap", "pgmap_pg", "pgmap_meta"};
     for (const auto& prefix : prefixes) {
       for (auto i = st.get_iterator(prefix); i->valid(); i->next()) {
@@ -640,7 +674,7 @@ static int update_pgmap_meta(MonitorDBStore& st)
   {
     auto stamp = ceph_clock_now();
     bufferlist bl;
-    ::encode(stamp, bl);
+    encode(stamp, bl);
     t->put(prefix, "stamp", bl);
   }
   {
@@ -654,7 +688,7 @@ static int update_pgmap_meta(MonitorDBStore& st)
     if (full_ratio > 1.0)
       full_ratio /= 100.0;
     bufferlist bl;
-    ::encode(full_ratio, bl);
+    encode(full_ratio, bl);
     t->put(prefix, "full_ratio", bl);
   }
   {
@@ -662,7 +696,7 @@ static int update_pgmap_meta(MonitorDBStore& st)
     if (backfillfull_ratio > 1.0)
       backfillfull_ratio /= 100.0;
     bufferlist bl;
-    ::encode(backfillfull_ratio, bl);
+    encode(backfillfull_ratio, bl);
     t->put(prefix, "backfillfull_ratio", bl);
   }
   {
@@ -670,7 +704,7 @@ static int update_pgmap_meta(MonitorDBStore& st)
     if (nearfull_ratio > 1.0)
       nearfull_ratio /= 100.0;
     bufferlist bl;
-    ::encode(nearfull_ratio, bl);
+    encode(nearfull_ratio, bl);
     t->put(prefix, "nearfull_ratio", bl);
   }
   st.apply_transaction(t);
@@ -698,6 +732,9 @@ int rebuild_monstore(const char* progname,
   if (!keyring_path.empty())
     update_auth(st, keyring_path);
   if ((r = update_pgmap_meta(st))) {
+    return r;
+  }
+  if ((r = update_mgrmap(st))) {
     return r;
   }
   if ((r = update_paxos(st))) {

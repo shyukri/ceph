@@ -101,22 +101,20 @@ class C_tick_wakeup : public EventCallback {
 static void alloc_aligned_buffer(bufferlist& data, unsigned len, unsigned off)
 {
   // create a buffer to read into that matches the data alignment
+  unsigned alloc_len = 0;
   unsigned left = len;
+  unsigned head = 0;
   if (off & ~CEPH_PAGE_MASK) {
     // head
-    unsigned head = 0;
+    alloc_len += CEPH_PAGE_SIZE;
     head = MIN(CEPH_PAGE_SIZE - (off & ~CEPH_PAGE_MASK), left);
-    data.push_back(buffer::create(head));
     left -= head;
   }
-  unsigned middle = left & CEPH_PAGE_MASK;
-  if (middle > 0) {
-    data.push_back(buffer::create_page_aligned(middle));
-    left -= middle;
-  }
-  if (left) {
-    data.push_back(buffer::create(left));
-  }
+  alloc_len += left;
+  bufferptr ptr(buffer::create_page_aligned(alloc_len));
+  if (head)
+    ptr.set_offset(CEPH_PAGE_SIZE - head);
+  data.push_back(std::move(ptr));
 }
 
 AsyncConnection::AsyncConnection(CephContext *cct, AsyncMessenger *m, DispatchQueue *q,
@@ -159,11 +157,16 @@ AsyncConnection::~AsyncConnection()
 void AsyncConnection::maybe_start_delay_thread()
 {
   if (!delay_state) {
-    auto pos = async_msgr->cct->_conf->get_val<std::string>("ms_inject_delay_type").find(ceph_entity_type_name(peer_type));
-    if (pos != string::npos) {
-      ldout(msgr->cct, 1) << __func__ << " setting up a delay queue" << dendl;
-      delay_state = new DelayedDelivery(async_msgr, center, dispatch_queue, conn_id);
-    }
+    async_msgr->cct->_conf->with_val<std::string>(
+      "ms_inject_delay_type",
+      [this](const string& s) {
+	if (s.find(ceph_entity_type_name(peer_type)) != string::npos) {
+	  ldout(msgr->cct, 1) << __func__ << " setting up a delay queue"
+			      << dendl;
+	  delay_state = new DelayedDelivery(async_msgr, center, dispatch_queue,
+					    conn_id);
+	}
+      });
   }
 }
 
@@ -943,8 +946,8 @@ ssize_t AsyncConnection::_process_connection()
         bl.append(state_buffer+banner_len, sizeof(ceph_entity_addr)*2);
         bufferlist::iterator p = bl.begin();
         try {
-          ::decode(paddr, p);
-          ::decode(peer_addr_for_me, p);
+          decode(paddr, p);
+          decode(peer_addr_for_me, p);
         } catch (const buffer::error& e) {
           lderr(async_msgr->cct) << __func__ <<  " decode peer addr failed " << dendl;
           goto fail;
@@ -984,7 +987,7 @@ ssize_t AsyncConnection::_process_connection()
           return 0;
         }
 
-        ::encode(async_msgr->get_myaddr(), myaddrbl, 0); // legacy
+        encode(async_msgr->get_myaddr(), myaddrbl, 0); // legacy
         r = try_send(myaddrbl);
         if (r == 0) {
           state = STATE_CONNECTING_SEND_CONNECT_MSG;
@@ -1201,9 +1204,9 @@ ssize_t AsyncConnection::_process_connection()
 
         bl.append(CEPH_BANNER, strlen(CEPH_BANNER));
 
-        ::encode(async_msgr->get_myaddr(), bl, 0); // legacy
+        encode(async_msgr->get_myaddr(), bl, 0); // legacy
         port = async_msgr->get_myaddr().get_port();
-        ::encode(socket_addr, bl, 0); // legacy
+        encode(socket_addr, bl, 0); // legacy
         ldout(async_msgr->cct, 1) << __func__ << " sd=" << cs.fd() << " " << socket_addr << dendl;
 
         r = try_send(bl);
@@ -1244,7 +1247,7 @@ ssize_t AsyncConnection::_process_connection()
         addr_bl.append(state_buffer+strlen(CEPH_BANNER), sizeof(ceph_entity_addr));
         try {
           bufferlist::iterator ti = addr_bl.begin();
-          ::decode(peer_addr, ti);
+          decode(peer_addr, ti);
         } catch (const buffer::error& e) {
 	  lderr(async_msgr->cct) << __func__ <<  " decode peer_addr failed " << dendl;
           goto fail;
@@ -1878,7 +1881,7 @@ void AsyncConnection::accept(ConnectedSocket socket, entity_addr_t &addr)
 
 int AsyncConnection::send_message(Message *m)
 {
-  FUNCTRACE();
+  FUNCTRACE(async_msgr->cct);
   lgeneric_subdout(async_msgr->cct, ms,
 		   1) << "-- " << async_msgr->get_myaddr() << " --> "
 		      << get_peer_addr() << " -- "
@@ -2170,7 +2173,7 @@ void AsyncConnection::prepare_send_message(uint64_t features, Message *m, buffer
 
 ssize_t AsyncConnection::write_message(Message *m, bufferlist& bl, bool more)
 {
-  FUNCTRACE();
+  FUNCTRACE(async_msgr->cct);
   assert(center->in_thread());
   m->set_seq(++out_seq);
 

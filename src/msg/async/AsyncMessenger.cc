@@ -171,6 +171,8 @@ void Processor::accept()
     Worker *w = worker;
     if (!msgr->get_stack()->support_local_listen_table())
       w = msgr->get_stack()->get_worker();
+    else
+      ++w->references;
     int r = listen_socket.accept(&cli_socket, opts, &addr, w);
     if (r == 0) {
       ldout(msgr->cct, 10) << __func__ << " accepted incoming on sd " << cli_socket.fd() << dendl;
@@ -552,7 +554,7 @@ ConnectionRef AsyncMessenger::get_loopback_connection()
 
 int AsyncMessenger::_send_message(Message *m, const entity_inst_t& dest)
 {
-  FUNCTRACE();
+  FUNCTRACE(cct);
   assert(m);
 
   if (m->get_type() == CEPH_MSG_OSD_OP)

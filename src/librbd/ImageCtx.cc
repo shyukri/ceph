@@ -466,13 +466,14 @@ struct C_InvalidateCache : public Context {
     data_ctx.snap_set_read(snap_id);
   }
 
-  snap_t ImageCtx::get_snap_id(cls::rbd::SnapshotNamespace in_snap_namespace,
-			       string in_snap_name) const
+  snap_t ImageCtx::get_snap_id(const cls::rbd::SnapshotNamespace& in_snap_namespace,
+                               const string& in_snap_name) const
   {
     assert(snap_lock.is_locked());
     auto it = snap_ids.find({in_snap_namespace, in_snap_name});
-    if (it != snap_ids.end())
+    if (it != snap_ids.end()) {
       return it->second;
+    }
     return CEPH_NOSNAP;
   }
 
@@ -483,7 +484,7 @@ struct C_InvalidateCache : public Context {
       snap_info.find(in_snap_id);
     if (it != snap_info.end())
       return &it->second;
-    return NULL;
+    return nullptr;
   }
 
   int ImageCtx::get_snap_name(snap_t in_snap_id,
@@ -1020,6 +1021,7 @@ struct C_InvalidateCache : public Context {
         "rbd_journal_max_payload_bytes", false)(
         "rbd_journal_max_concurrent_object_sets", false)(
         "rbd_mirroring_resync_after_disconnect", false)(
+        "rbd_mirroring_delete_delay", false)(
         "rbd_mirroring_replay_delay", false)(
         "rbd_skip_partial_discard", false)(
 	"rbd_qos_iops_limit", false);
@@ -1080,6 +1082,7 @@ struct C_InvalidateCache : public Context {
     ASSIGN_OPTION(journal_max_payload_bytes, uint64_t);
     ASSIGN_OPTION(journal_max_concurrent_object_sets, int64_t);
     ASSIGN_OPTION(mirroring_resync_after_disconnect, bool);
+    ASSIGN_OPTION(mirroring_delete_delay, uint64_t);
     ASSIGN_OPTION(mirroring_replay_delay, int64_t);
     ASSIGN_OPTION(skip_partial_discard, bool);
     ASSIGN_OPTION(blkin_trace_all, bool);

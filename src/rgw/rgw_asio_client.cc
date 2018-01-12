@@ -75,6 +75,7 @@ void ClientIO::init_env(CephContext *cct)
   char port_buf[16];
   snprintf(port_buf, sizeof(port_buf), "%d", socket.local_endpoint().port());
   env.set("SERVER_PORT", port_buf);
+  env.set("REMOTE_ADDR", socket.remote_endpoint().address().to_string());
   // TODO: set SERVER_PORT_SECURE if using ssl
   // TODO: set REMOTE_USER if authenticated
 }
@@ -170,7 +171,7 @@ size_t ClientIO::complete_header()
     sent += txbuf.sputn(timestr, strlen(timestr));
   }
 
-  if (parser.is_keep_alive()) {
+  if (parser.keep_alive()) {
     constexpr char CONN_KEEP_ALIVE[] = "Connection: Keep-Alive\r\n";
     sent += txbuf.sputn(CONN_KEEP_ALIVE, sizeof(CONN_KEEP_ALIVE) - 1);
   } else {

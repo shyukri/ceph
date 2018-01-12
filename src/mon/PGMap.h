@@ -58,17 +58,21 @@ public:
     int32_t up = 0;
     int32_t primary = 0;
     void encode(bufferlist& bl) const {
-      ::encode(acting, bl);
-      ::encode(up, bl);
-      ::encode(primary, bl);
+      using ceph::encode;
+      encode(acting, bl);
+      encode(up, bl);
+      encode(primary, bl);
     }
     void decode(bufferlist::iterator& p) {
-      ::decode(acting, p);
-      ::decode(up, p);
-      ::decode(primary, p);
+      using ceph::decode;
+      decode(acting, p);
+      decode(up, p);
+      decode(primary, p);
     }
   };
   mempool::pgmap::unordered_map<int32_t,pg_count> num_pg_by_osd;
+
+  mempool::pgmap::map<int64_t,interval_set<snapid_t>> purged_snaps;
 
   // recent deltas, and summation
   /**
@@ -378,6 +382,7 @@ public:
 		   bool sameosds=false);
   void stat_pg_sub(const pg_t &pgid, const pg_stat_t &s,
 		   bool sameosds=false);
+  void calc_purged_snaps();
   void stat_osd_add(int osd, const osd_stat_t &s);
   void stat_osd_sub(int osd, const osd_stat_t &s);
   
@@ -386,7 +391,7 @@ public:
 
   /// encode subset of our data to a PGMapDigest
   void encode_digest(const OSDMap& osdmap,
-		     bufferlist& bl, uint64_t features) const;
+		     bufferlist& bl, uint64_t features);
 
   int64_t get_rule_avail(const OSDMap& osdmap, int ruleno) const;
   void get_rules_avail(const OSDMap& osdmap,

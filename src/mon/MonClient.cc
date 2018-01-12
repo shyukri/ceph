@@ -328,7 +328,7 @@ void MonClient::handle_monmap(MMonMap *m)
   string cur_mon = monmap.get_name(peer);
 
   bufferlist::iterator p = m->monmapbl.begin();
-  ::decode(monmap, p);
+  decode(monmap, p);
 
   ldout(cct, 10) << " got monmap " << monmap.epoch
 		 << ", mon." << cur_mon << " is now rank " << monmap.get_rank(cur_mon)
@@ -880,7 +880,7 @@ int MonClient::_check_auth_rotating()
 
   utime_t now = ceph_clock_now();
   utime_t cutoff = now;
-  cutoff -= MIN(30.0, cct->_conf->auth_service_ticket_ttl / 4.0);
+  cutoff -= std::min(30.0, cct->_conf->auth_service_ticket_ttl / 4.0);
   utime_t issued_at_lower_bound = now;
   issued_at_lower_bound -= cct->_conf->auth_service_ticket_ttl;
   if (!rotating_secrets->need_new_secrets(cutoff)) {
@@ -1205,10 +1205,10 @@ void MonConnection::start(epoch_t epoch,
   m->protocol = 0;
   m->monmap_epoch = epoch;
   __u8 struct_v = 1;
-  ::encode(struct_v, m->auth_payload);
-  ::encode(auth_supported.get_supported_set(), m->auth_payload);
-  ::encode(entity_name, m->auth_payload);
-  ::encode(global_id, m->auth_payload);
+  encode(struct_v, m->auth_payload);
+  encode(auth_supported.get_supported_set(), m->auth_payload);
+  encode(entity_name, m->auth_payload);
+  encode(global_id, m->auth_payload);
   con->send_message(m);
 }
 

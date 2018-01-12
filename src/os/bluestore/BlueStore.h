@@ -567,7 +567,7 @@ public:
 #ifdef CACHE_BLOB_BL
     void _encode() const {
       if (blob_bl.length() == 0 ) {
-	::encode(blob, blob_bl);
+	encode(blob, blob_bl);
       } else {
 	assert(blob_bl.length());
       }
@@ -737,6 +737,7 @@ public:
     Onode *onode;
     extent_map_t extent_map;        ///< map of Extents to Blobs
     blob_map_t spanning_blob_map;   ///< blobs that span shards
+    typedef boost::intrusive_ptr<Onode> OnodeRef;
 
     struct Shard {
       bluestore_onode_t::shard_info *shard_info = nullptr;
@@ -750,6 +751,9 @@ public:
 
     uint32_t needs_reshard_begin = 0;
     uint32_t needs_reshard_end = 0;
+
+    void dup(BlueStore* b, TransContext*, CollectionRef&, OnodeRef&, OnodeRef&,
+      uint64_t&, uint64_t&, uint64_t&);
 
     bool needs_reshard() const {
       return needs_reshard_end > needs_reshard_begin;
@@ -1462,14 +1466,16 @@ public:
 	values[STATFS_COMPRESSED_ALLOCATED] == 0;
     }
     void decode(bufferlist::iterator& it) {
+      using ceph::decode;
       for (size_t i = 0; i < STATFS_LAST; i++) {
-	::decode(values[i], it);
+	decode(values[i], it);
       }
     }
 
     void encode(bufferlist& bl) {
+      using ceph::encode;
       for (size_t i = 0; i < STATFS_LAST; i++) {
-	::encode(values[i], bl);
+	encode(values[i], bl);
       }
     }
   };
@@ -1552,9 +1558,6 @@ public:
     set<SharedBlobRef> shared_blobs_written; ///< update these on io completion
 
     KeyValueDB::Transaction t; ///< then we will commit this
-    Context *oncommit = nullptr;         ///< signal on commit
-    Context *onreadable = nullptr;       ///< signal on readable
-    Context *onreadable_sync = nullptr;  ///< signal on readable
     list<Context*> oncommits;  ///< more commit completions
     list<CollectionRef> removed_collections; ///< colls we removed
 
@@ -1599,9 +1602,9 @@ public:
       // onode itself isn't written, though
       modified_objects.insert(o);
     }
-    void removed(OnodeRef& o) {
+    void note_removed_object(OnodeRef& o) {
       onodes.erase(o);
-      modified_objects.erase(o);
+      modified_objects.insert(o);
     }
 
     void aio_finish(BlueStore *store) override {
@@ -1663,6 +1666,8 @@ public:
 
     Sequencer *parent;
     BlueStore *store;
+
+    size_t shard;
 
     uint64_t last_seq = 0;
 
@@ -2017,7 +2022,7 @@ private:
   void _assign_nid(TransContext *txc, OnodeRef o);
   uint64_t _assign_blobid(TransContext *txc);
 
-  void _dump_onode(OnodeRef o, int log_level=30);
+  void _dump_onode(const OnodeRef& o, int log_level=30);
   void _dump_extent_map(ExtentMap& em, int log_level=30);
   void _dump_transaction(Transaction *t, int log_level = 30);
 
@@ -2069,6 +2074,7 @@ private:
     const PExtentVector& extents,
     bool compressed,
     mempool_dynamic_bitset &used_blocks,
+    uint64_t granularity,
     store_statfs_t& expected_statfs);
 
   void _buffer_cache_write(

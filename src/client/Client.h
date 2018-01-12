@@ -275,7 +275,6 @@ class Client : public Dispatcher, public md_config_obs_t {
   client_getgroups_callback_t getgroups_cb;
   client_umask_callback_t umask_cb;
   bool can_invalidate_dentries;
-  bool require_remount;
 
   Finisher async_ino_invalidator;
   Finisher async_dentry_invalidator;
@@ -429,8 +428,8 @@ protected:
   Inode*                 root_ancestor;
   LRU                    lru;    // lru list of Dentry's in our local metadata cache.
 
-  // all inodes with caps sit on either cap_list or delayed_caps.
-  xlist<Inode*> delayed_caps, cap_list;
+  // dirty_list keeps all the dirty inodes before flushing.
+  xlist<Inode*> delayed_list, dirty_list;
   int num_flushing_caps;
   ceph::unordered_map<inodeno_t,SnapRealm*> snap_realms;
 
@@ -538,6 +537,7 @@ protected:
   void trim_dentry(Dentry *dn);
   void trim_caps(MetaSession *s, uint64_t max);
   void _invalidate_kernel_dcache();
+  void _trim_negative_child_dentries(InodeRef& in);
   
   void dump_inode(Formatter *f, Inode *in, set<Inode*>& did, bool disconnected);
   void dump_cache(Formatter *f);  // debug
@@ -632,7 +632,6 @@ protected:
   void remove_cap(Cap *cap, bool queue_release);
   void remove_all_caps(Inode *in);
   void remove_session_caps(MetaSession *session);
-  void mark_caps_dirty(Inode *in, int caps);
   int mark_caps_flushing(Inode *in, ceph_tid_t *ptid);
   void adjust_session_flushing_caps(Inode *in, MetaSession *old_s, MetaSession *new_s);
   void flush_caps_sync();
@@ -730,6 +729,7 @@ protected:
   void flush_mdlog_sync();
   void flush_mdlog(MetaSession *session);
   
+  xlist<Inode*> &get_dirty_list() { return dirty_list; }
   // ----------------------
   // fs ops.
 private:
@@ -761,6 +761,7 @@ private:
   int _release_fh(Fh *fh);
   void _put_fh(Fh *fh);
 
+  int _do_remount(void);
 
   struct C_Readahead : public Context {
     Client *client;

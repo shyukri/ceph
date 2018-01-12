@@ -102,7 +102,6 @@
 
 #include "perfglue/heap_profiler.h"
 
-using namespace std;
 
 #include "common/config.h"
 #include "include/assert.h"
@@ -309,10 +308,12 @@ void MDCache::remove_inode(CInode *o)
     export_pin_queue.erase(o);
 
   // remove from inode map
-  if (o->last == CEPH_NOSNAP)
+  if (o->last == CEPH_NOSNAP) {
     inode_map.erase(o->ino());
-  else
+  } else {
+    o->item_caps.remove_myself();
     snap_inode_map.erase(o->vino());
+  }
 
   if (o->ino() < MDS_INO_SYSTEM_BASE) {
     if (o == root) root = 0;
@@ -1494,8 +1495,8 @@ CInode *MDCache::cow_inode(CInode *in, snapid_t last)
 
   CInode *oldin = new CInode(this, true, in->first, last);
   oldin->inode = *in->get_previous_projected_inode();
-  oldin->symlink = in->symlink;
   oldin->xattrs = *in->get_previous_projected_xattrs();
+  oldin->symlink = in->symlink;
   oldin->inode.trim_client_ranges(last);
 
   if (in->first < in->oldest_snap)
@@ -1532,7 +1533,7 @@ CInode *MDCache::cow_inode(CInode *in, snapid_t last)
     for (auto p : in->client_caps) {
       client_t client = p.first;
       Capability *cap = p.second;
-      int issued = cap->issued();
+      int issued = cap->need_snapflush() ? CEPH_CAP_ANY_WR : cap->issued();
       if ((issued & CEPH_CAP_ANY_WR) &&
 	  cap->client_follows < last) {
 	// note in oldin
@@ -1582,15 +1583,20 @@ void MDCache::journal_cow_dentry(MutationImpl *mut, EMetaBlob *metablob,
     dnl = dn->get_projected_linkage();
   assert(!dnl->is_null());
 
-  if (dnl->is_primary() && dnl->get_inode()->is_multiversion()) {
+  CInode *in = dnl->is_primary() ? dnl->get_inode() : NULL;
+  bool cow_head = false;
+  if (in && in->state_test(CInode::STATE_AMBIGUOUSAUTH)) {
+    assert(in->is_frozen_inode());
+    cow_head = true;
+  }
+  if (in && (in->is_multiversion() || cow_head)) {
     // multiversion inode.
-    CInode *in = dnl->get_inode();
     SnapRealm *realm = NULL;
 
     if (in->get_projected_parent_dn() != dn) {
       assert(follows == CEPH_NOSNAP);
       realm = dn->dir->inode->find_snaprealm();
-      snapid_t dir_follows = realm->get_newest_snap();
+      snapid_t dir_follows = realm->get_newest_seq();
 
       if (dir_follows+1 > dn->first) {
 	snapid_t oldfirst = dn->first;
@@ -1605,7 +1611,7 @@ void MDCache::journal_cow_dentry(MutationImpl *mut, EMetaBlob *metablob,
 	  // FIXME: adjust link count here?  hmm.
 
 	  if (dir_follows+1 > in->first)
-	    in->cow_old_inode(dir_follows, false);
+	    in->cow_old_inode(dir_follows, cow_head);
 	}
       }
 
@@ -1632,7 +1638,7 @@ void MDCache::journal_cow_dentry(MutationImpl *mut, EMetaBlob *metablob,
       return;
     }
 
-    in->cow_old_inode(follows, false);
+    in->cow_old_inode(follows, cow_head);
 
   } else {
     SnapRealm *realm = dn->dir->inode->find_snaprealm();
@@ -1648,8 +1654,6 @@ void MDCache::journal_cow_dentry(MutationImpl *mut, EMetaBlob *metablob,
     // update dn.first before adding old dentry to cdir's map
     snapid_t oldfirst = dn->first;
     dn->first = follows+1;
-
-    CInode *in = dnl->is_primary() ? dnl->get_inode() : NULL;
 
     if (!realm->has_snaps_in_range(oldfirst, follows)) {
       dout(10) << "journal_cow_dentry no snapshot follows " << follows << " on " << *dn << dendl;
@@ -1668,8 +1672,10 @@ void MDCache::journal_cow_dentry(MutationImpl *mut, EMetaBlob *metablob,
       oldin->inode.version = olddn->pre_dirty();
       dout(10) << " olddn " << *olddn << dendl;
       bool need_snapflush = !oldin->client_snap_caps.empty();
-      if (need_snapflush)
+      if (need_snapflush) {
 	mut->ls->open_files.push_back(&oldin->item_open_file);
+	mds->locker->mark_need_snapflush_inode(oldin);
+      }
       metablob->add_primary_dentry(olddn, 0, true, false, false, need_snapflush);
       mut->add_cow_dentry(olddn);
     } else {
@@ -1746,7 +1752,7 @@ void MDCache::project_rstat_inode_to_frag(CInode *cur, CDir *parent, snapid_t fi
 
   if (cur->last != CEPH_NOSNAP) {
     assert(cur->dirty_old_rstats.empty());
-    set<snapid_t>::const_iterator q = snaps.lower_bound(MAX(first, floor));
+    set<snapid_t>::const_iterator q = snaps.lower_bound(std::max(first, floor));
     if (q == snaps.end() || *q > cur->last)
       return;
   }
@@ -1760,7 +1766,7 @@ void MDCache::project_rstat_inode_to_frag(CInode *cur, CDir *parent, snapid_t fi
       assert(cur->is_frozen_inode());
       update = false;
     }
-    _project_rstat_inode_to_frag(*curi, MAX(first, floor), cur->last, parent,
+    _project_rstat_inode_to_frag(*curi, std::max(first, floor), cur->last, parent,
 				 linkunlink, update);
   }
 
@@ -1769,7 +1775,7 @@ void MDCache::project_rstat_inode_to_frag(CInode *cur, CDir *parent, snapid_t fi
 	 p != cur->dirty_old_rstats.end();
 	 ++p) {
       old_inode_t& old = cur->old_inodes[*p];
-      snapid_t ofirst = MAX(old.first, floor);
+      snapid_t ofirst = std::max(old.first, floor);
       set<snapid_t>::const_iterator q = snaps.lower_bound(ofirst);
       if (q == snaps.end() || *q > *p)
 	continue;
@@ -1814,7 +1820,7 @@ void MDCache::_project_rstat_inode_to_frag(inode_t& inode, snapid_t ofirst, snap
     fnode_t *pf = parent->get_projected_fnode();
     if (last == CEPH_NOSNAP) {
       if (g_conf->mds_snap_rstat)
-	first = MAX(ofirst, parent->first);
+	first = std::max(ofirst, parent->first);
       else
 	first = parent->first;
       prstat = &pf->rstat;
@@ -1916,7 +1922,7 @@ void MDCache::project_rstat_frag_to_inode(nest_info_t& rstat, nest_info_t& accou
     snapid_t first;
     if (last == pin->last) {
       pi = pin->get_projected_inode();
-      first = MAX(ofirst, pin->first);
+      first = std::max(ofirst, pin->first);
       if (first > pin->first) {
 	old_inode_t& old = pin->cow_old_inode(first-1, cow_head);
 	dout(20) << "   cloned old_inode rstat is " << old.inode.rstat << dendl;
@@ -2726,8 +2732,8 @@ void MDCache::send_slave_resolves()
 	  map<client_t, Capability::Export> cap_map;
 	  in->export_client_caps(cap_map);
 	  bufferlist bl;
-	  ::encode(in->ino(), bl);
-	  ::encode(cap_map, bl);
+	  encode(in->ino(), bl);
+	  encode(cap_map, bl);
 	  resolves[master]->add_slave_request(p->first, bl);
 	} else {
 	  resolves[master]->add_slave_request(p->first, mdr->committing);
@@ -3157,8 +3163,8 @@ void MDCache::handle_resolve(MMDSResolve *m)
 	  inodeno_t ino;
 	  map<client_t,Capability::Export> cap_exports;
 	  bufferlist::iterator q = p->second.inode_caps.begin();
-	  ::decode(ino, q);
-	  ::decode(cap_exports, q);
+	  decode(ino, q);
+	  decode(cap_exports, q);
 
 	  assert(get_inode(ino));
 
@@ -3176,7 +3182,7 @@ void MDCache::handle_resolve(MMDSResolve *m)
 	  rejoin_slave_exports[ino].second.swap(cap_exports);
 
 	  // send information of imported caps back to slave
-	  ::encode(rejoin_imported_caps[from][ino], ack->commit[p->first]);
+	  encode(rejoin_imported_caps[from][ino], ack->commit[p->first]);
 	}
       } else {
 	// ABORT
@@ -3912,13 +3918,13 @@ void MDCache::rejoin_start(MDSInternalContext *rejoin_done_)
 /*
  * rejoin phase!
  *
- * this initiates rejoin.  it shoudl be called before we get any
+ * this initiates rejoin.  it should be called before we get any
  * rejoin or rejoin_ack messages (or else mdsmap distribution is broken).
  *
  * we start out by sending rejoins to everyone in the recovery set.
  *
  * if we are rejoin, send for all regions in our cache.
- * if we are active|stopping, send only to nodes that are are rejoining.
+ * if we are active|stopping, send only to nodes that are rejoining.
  */
 void MDCache::rejoin_send_rejoins()
 {
@@ -4170,6 +4176,7 @@ void MDCache::rejoin_walk(CDir *dir, MMDSCacheRejoin *rejoin)
 	 p != dir->items.end();
 	 ++p) {
       CDentry *dn = p->second;
+      assert(dn->last == CEPH_NOSNAP);
       CDentry::linkage_t *dnl = dn->get_linkage();
       dout(15) << " add_weak_primary_dentry " << *dn << dendl;
       assert(dnl->is_primary());
@@ -4189,10 +4196,39 @@ void MDCache::rejoin_walk(CDir *dir, MMDSCacheRejoin *rejoin)
     dir->state_set(CDir::STATE_REJOINING);
 
     for (CDir::map_t::iterator p = dir->items.begin();
-	 p != dir->items.end();
-	 ++p) {
+	 p != dir->items.end(); ) {
       CDentry *dn = p->second;
+      ++p;
+      dn->state_set(CDentry::STATE_REJOINING);
       CDentry::linkage_t *dnl = dn->get_linkage();
+      CInode *in = dnl->is_primary() ? dnl->get_inode() : NULL;
+
+      // trim snap dentries. because they may have been pruned by
+      // their auth mds (snap deleted)
+      if (dn->last != CEPH_NOSNAP) {
+	if (in && !in->remote_parents.empty()) {
+	  // unlink any stale remote snap dentry.
+	  for (compact_set<CDentry*>::iterator q = in->remote_parents.begin();
+	       q != in->remote_parents.end(); ) {
+	    CDentry *remote_dn = *q;
+	    ++q;
+	    assert(remote_dn->last != CEPH_NOSNAP);
+	    remote_dn->unlink_remote(remote_dn->get_linkage());
+	  }
+	}
+	if (dn->lru_is_expireable()) {
+	  if (!dnl->is_null())
+	    dir->unlink_inode(dn, false);
+	  if (in)
+	    remove_inode(in);
+	  dir->remove_dentry(dn);
+	  continue;
+	} else {
+	  // Inventing null/remote dentry shouldn't cause problem
+	  assert(!dnl->is_primary());
+	}
+      }
+
       dout(15) << " add_strong_dentry " << *dn << dendl;
       rejoin->add_strong_dentry(dir->dirfrag(), dn->name, dn->first, dn->last,
 				dnl->is_primary() ? dnl->get_inode()->ino():inodeno_t(0),
@@ -4310,7 +4346,7 @@ void MDCache::handle_cache_rejoin_weak(MMDSCacheRejoin *weak)
       mds->locker->eval(in, CEPH_CAP_LOCKS, true);
     }
 
-    ::encode(imported_caps, ack->imported_caps);
+    encode(imported_caps, ack->imported_caps);
   } else {
     assert(mds->is_rejoin());
 
@@ -5031,9 +5067,9 @@ void MDCache::handle_cache_rejoin_ack(MMDSCacheRejoin *ack)
     inodeno_t ino;
     snapid_t last;
     bufferlist basebl;
-    ::decode(ino, p);
-    ::decode(last, p);
-    ::decode(basebl, p);
+    decode(ino, p);
+    decode(last, p);
+    decode(basebl, p);
     CInode *in = get_inode(ino, last);
     assert(in);
     bufferlist::iterator q = basebl.begin();
@@ -5049,10 +5085,10 @@ void MDCache::handle_cache_rejoin_ack(MMDSCacheRejoin *ack)
     snapid_t last;
     __u32 nonce;
     bufferlist lockbl;
-    ::decode(ino, p);
-    ::decode(last, p);
-    ::decode(nonce, p);
-    ::decode(lockbl, p);
+    decode(ino, p);
+    decode(last, p);
+    decode(nonce, p);
+    decode(lockbl, p);
     
     CInode *in = get_inode(ino, last);
     assert(in);
@@ -5069,7 +5105,7 @@ void MDCache::handle_cache_rejoin_ack(MMDSCacheRejoin *ack)
 
   map<inodeno_t,map<client_t,Capability::Import> > peer_imported;
   bufferlist::iterator bp = ack->imported_caps.begin();
-  ::decode(peer_imported, bp);
+  decode(peer_imported, bp);
 
   for (map<inodeno_t,map<client_t,Capability::Import> >::iterator p = peer_imported.begin();
        p != peer_imported.end();
@@ -5417,6 +5453,9 @@ void MDCache::rebuild_need_snapflush(CInode *head_in, SnapRealm *realm,
 {
   dout(10) << "rebuild_need_snapflush " << snap_follows << " on " << *head_in << dendl;
 
+  if (!realm->has_snaps_in_range(snap_follows + 1, head_in->first - 1))
+    return;
+
   const set<snapid_t>& snaps = realm->get_snaps();
   snapid_t follows = snap_follows;
 
@@ -5424,9 +5463,21 @@ void MDCache::rebuild_need_snapflush(CInode *head_in, SnapRealm *realm,
     CInode *in = pick_inode_snap(head_in, follows);
     if (in == head_in)
       break;
+
+    bool need_snapflush = false;
+    for (auto p = snaps.lower_bound(std::max<snapid_t>(in->first, (follows + 1)));
+	 p != snaps.end() && *p <= in->last;
+	 ++p) {
+      head_in->add_need_snapflush(in, *p, client);
+      need_snapflush = true;
+    }
+    follows = in->last;
+    if (!need_snapflush)
+      continue;
+
     dout(10) << " need snapflush from client." << client << " on " << *in << dendl;
 
-    /* TODO: we can check the reconnected/flushing caps to find 
+    /* TODO: we can check the reconnected/flushing caps to find
      *       which locks need gathering */
     for (int i = 0; i < num_cinode_locks; i++) {
       int lockid = cinode_lock_info[i].lock;
@@ -5437,14 +5488,7 @@ void MDCache::rebuild_need_snapflush(CInode *head_in, SnapRealm *realm,
       lock->set_state(LOCK_SNAP_SYNC);
       lock->get_wrlock(true);
     }
-
-    for (auto p = snaps.lower_bound(in->first);
-	 p != snaps.end() && *p <= in->last;
-	 ++p) {
-      head_in->add_need_snapflush(in, *p, client);
-    }
-
-    follows = in->last;
+    mds->locker->mark_need_snapflush_inode(in);
   }
 }
 
@@ -5689,7 +5733,7 @@ void MDCache::do_cap_import(Session *session, CInode *in, Capability *cap,
 			    uint64_t p_cap_id, ceph_seq_t p_seq, ceph_seq_t p_mseq,
 			    int peer, int p_flags)
 {
-  client_t client = session->info.inst.name.num();
+  client_t client = session->get_client();
   SnapRealm *realm = in->find_snaprealm();
   if (realm->have_past_parents_open()) {
     dout(10) << "do_cap_import " << session->info.inst.name << " mseq " << cap->get_mseq() << " on " << *in << dendl;
@@ -5750,8 +5794,17 @@ void MDCache::open_snap_parents()
 	auto q = reconnected_caps.find(child->ino());
 	assert(q != reconnected_caps.end());
 	for (auto r = q->second.begin(); r != q->second.end(); ++r) {
-	  if (r->second.snap_follows > 0 && r->second.snap_follows < in->first - 1) {
-	    rebuild_need_snapflush(child, in->snaprealm, r->first, r->second.snap_follows);
+	  if (r->second.snap_follows > 0) {
+	    if (r->second.snap_follows < child->first - 1) {
+	      rebuild_need_snapflush(child, in->snaprealm, r->first, r->second.snap_follows);
+	    } else if (r->second.snapflush) {
+	      // When processing a cap flush message that is re-sent, it's possble
+	      // that the sender has already released all WR caps. So we should
+	      // force MDCache::cow_inode() to setup CInode::client_need_snapflush.
+	      Capability *cap = child->get_client_cap(r->first);
+	      if (cap)
+		cap->mark_needsnapflush();
+	    }
 	  }
 	  // make sure client's cap is in the correct snaprealm.
 	  if (r->second.realm_ino != in->ino()) {
@@ -6047,7 +6100,7 @@ void MDCache::rejoin_send_acks()
 
   // send acks
   for (auto p = acks.begin(); p != acks.end(); ++p) {
-    ::encode(rejoin_imported_caps[p->first], p->second->imported_caps);
+    encode(rejoin_imported_caps[p->first], p->second->imported_caps);
     mds->send_message_mds(p->second, p->first);
   }
 
@@ -8045,7 +8098,7 @@ int MDCache::path_traverse(MDRequestRef& mdr, Message *req, MDSInternalContextBa
       if (curdir->is_complete() ||
 	  (snapid == CEPH_NOSNAP &&
 	   curdir->has_bloom() &&
-	   !curdir->is_in_bloom(path[depth]))){
+	   !curdir->is_in_bloom(path[depth]))) {
         // file not found
 	if (pdnvec) {
 	  // instantiate a null dn?
@@ -8091,7 +8144,7 @@ int MDCache::path_traverse(MDRequestRef& mdr, Message *req, MDSInternalContextBa
       mds_authority_t dauth = curdir->authority();
 
       if (forward &&
-	  snapid && mdr && mdr->client_request &&
+	  mdr && mdr->client_request &&
 	  (int)depth < mdr->client_request->get_num_fwd()) {
 	dout(7) << "traverse: snap " << snapid << " and depth " << depth
 		<< " < fwd " << mdr->client_request->get_num_fwd()
@@ -8354,7 +8407,7 @@ void MDCache::_open_ino_backtrace_fetched(inodeno_t ino, bufferlist& bl, int err
   inode_backtrace_t backtrace;
   if (err == 0) {
     try {
-      ::decode(backtrace, bl);
+      decode(backtrace, bl);
     } catch (const buffer::error &decode_exc) {
       derr << "corrupt backtrace on ino x0" << std::hex << ino
            << std::dec << ": " << decode_exc << dendl;
@@ -8624,9 +8677,10 @@ void MDCache::do_open_ino_peer(inodeno_t ino, open_ino_info_t& info)
 {
   set<mds_rank_t> all, active;
   mds->mdsmap->get_mds_set(all);
-  mds->mdsmap->get_clientreplay_or_active_or_stopping_mds_set(active);
   if (mds->get_state() == MDSMap::STATE_REJOIN)
-    mds->mdsmap->get_mds_set(active, MDSMap::STATE_REJOIN);
+    mds->mdsmap->get_mds_set_lower_bound(active, MDSMap::STATE_REJOIN);
+  else
+    mds->mdsmap->get_mds_set_lower_bound(active, MDSMap::STATE_CLIENTREPLAY);
 
   dout(10) << "do_open_ino_peer " << ino << " active " << active
 	   << " all " << all << " checked " << info.checked << dendl;
@@ -8838,7 +8892,7 @@ void MDCache::_do_find_ino_peer(find_ino_peer_info_t& fip)
 {
   set<mds_rank_t> all, active;
   mds->mdsmap->get_mds_set(all);
-  mds->mdsmap->get_clientreplay_or_active_or_stopping_mds_set(active);
+  mds->mdsmap->get_mds_set_lower_bound(active, MDSMap::STATE_CLIENTREPLAY);
 
   dout(10) << "_do_find_ino_peer " << fip.tid << " " << fip.ino
 	   << " active " << active << " all " << all
@@ -9317,7 +9371,7 @@ void MDCache::snaprealm_create(MDRequestRef& mdr, CInode *in)
 
   bufferlist::iterator p = mdr->more()->snapidbl.begin();
   snapid_t seq;
-  ::decode(seq, p);
+  decode(seq, p);
 
   sr_t *newsnap = in->project_snaprealm(seq);
   newsnap->seq = seq;
@@ -9454,7 +9508,7 @@ void MDCache::_snaprealm_create_finish(MDRequestRef& mdr, MutationRef& mut, CIno
   // create
   bufferlist::iterator p = mdr->more()->snapidbl.begin();
   snapid_t seq;
-  ::decode(seq, p);
+  decode(seq, p);
 
   in->open_snaprealm();
   in->snaprealm->srnode.seq = seq;
@@ -9912,7 +9966,9 @@ void MDCache::handle_discover(MDiscover *dis)
     // incomplete dir?
     if (!dn) {
       if (!curdir->is_complete() &&
-	  (!curdir->has_bloom() || curdir->is_in_bloom(dis->get_dentry(i)))) {
+	  !(snapid == CEPH_NOSNAP &&
+	    curdir->has_bloom() &&
+	    !curdir->is_in_bloom(dis->get_dentry(i)))) {
 	// readdir
 	dout(7) << "incomplete dir contents for " << *curdir << ", fetching" << dendl;
 	if (reply->is_empty()) {
@@ -9928,10 +9984,19 @@ void MDCache::handle_discover(MDiscover *dis)
 	}
       }
 
+      if (snapid != CEPH_NOSNAP && !reply->is_empty()) {
+	dout(7) << "dentry " << dis->get_dentry(i) << " snap " << snapid
+		<< " dne, non-empty reply, stopping" << dendl;
+	break;
+      }
+
       // send null dentry
       dout(7) << "dentry " << dis->get_dentry(i) << " dne, returning null in "
 	      << *curdir << dendl;
-      dn = curdir->add_null_dentry(dis->get_dentry(i));
+      if (snapid == CEPH_NOSNAP)
+	dn = curdir->add_null_dentry(dis->get_dentry(i));
+      else
+	dn = curdir->add_null_dentry(dis->get_dentry(i), snapid, snapid);
     }
     assert(dn);
 
@@ -10170,22 +10235,22 @@ void MDCache::handle_discover_reply(MDiscoverReply *m)
 void MDCache::replicate_dir(CDir *dir, mds_rank_t to, bufferlist& bl)
 {
   dirfrag_t df = dir->dirfrag();
-  ::encode(df, bl);
+  encode(df, bl);
   dir->encode_replica(to, bl);
 }
 
 void MDCache::replicate_dentry(CDentry *dn, mds_rank_t to, bufferlist& bl)
 {
-  ::encode(dn->name, bl);
-  ::encode(dn->last, bl);
+  encode(dn->name, bl);
+  encode(dn->last, bl);
   dn->encode_replica(to, bl, mds->get_state() < MDSMap::STATE_ACTIVE);
 }
 
 void MDCache::replicate_inode(CInode *in, mds_rank_t to, bufferlist& bl,
 			      uint64_t features)
 {
-  ::encode(in->inode.ino, bl);  // bleh, minor assymetry here
-  ::encode(in->last, bl);
+  encode(in->inode.ino, bl);  // bleh, minor assymetry here
+  encode(in->last, bl);
   in->encode_replica(to, bl, features, mds->get_state() < MDSMap::STATE_ACTIVE);
 }
 
@@ -10193,7 +10258,7 @@ CDir *MDCache::add_replica_dir(bufferlist::iterator& p, CInode *diri, mds_rank_t
 			       list<MDSInternalContextBase*>& finished)
 {
   dirfrag_t df;
-  ::decode(df, p);
+  decode(df, p);
 
   assert(diri->ino() == df.ino);
 
@@ -10235,8 +10300,8 @@ CDentry *MDCache::add_replica_dentry(bufferlist::iterator& p, CDir *dir, list<MD
 {
   string name;
   snapid_t last;
-  ::decode(name, p);
-  ::decode(last, p);
+  decode(name, p);
+  decode(last, p);
 
   CDentry *dn = dir->lookup(name, last);
   
@@ -10259,8 +10324,8 @@ CInode *MDCache::add_replica_inode(bufferlist::iterator& p, CDentry *dn, list<MD
 {
   inodeno_t ino;
   snapid_t last;
-  ::decode(ino, p);
-  ::decode(last, p);
+  decode(ino, p);
+  decode(last, p);
   CInode *in = get_inode(ino, last);
   if (!in) {
     in = new CInode(this, false, 1, last);
@@ -10430,8 +10495,8 @@ void MDCache::send_dentry_link(CDentry *dn, MDRequestRef& mdr)
       inodeno_t ino = dnl->get_remote_ino();
       __u8 d_type = dnl->get_remote_d_type();
       dout(10) << "  remote " << ino << " " << d_type << dendl;
-      ::encode(ino, m->bl);
-      ::encode(d_type, m->bl);
+      encode(ino, m->bl);
+      encode(d_type, m->bl);
     } else
       ceph_abort();   // aie, bad caller!
     mds->send_message_mds(m, p.first);
@@ -10469,8 +10534,8 @@ void MDCache::handle_dentry_link(MDentryLink *m)
       // remote link, easy enough.
       inodeno_t ino;
       __u8 d_type;
-      ::decode(ino, p);
-      ::decode(d_type, p);
+      decode(ino, p);
+      decode(d_type, p);
       dir->link_remote_inode(dn, ino, d_type);
     }
   } else {
@@ -11611,7 +11676,7 @@ void MDCache::rollback_uncommitted_fragments()
 	resultfrags.push_back(dir);
 
 	dirfrag_rollback rollback;
-	::decode(rollback, bp);
+	decode(rollback, bp);
 
 	dir->set_version(rollback.fnode.version);
 	dir->fnode = rollback.fnode;
@@ -11920,7 +11985,7 @@ int MDCache::dump_cache(const char *fn, Formatter *f,
     }
   }
 
-  auto dump_func = [this, fd, f, depth, &dump_root](CInode *in) {
+  auto dump_func = [fd, f, depth, &dump_root](CInode *in) {
     int r;
     if (!dump_root.empty()) {
       string ipath;

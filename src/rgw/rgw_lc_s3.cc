@@ -11,7 +11,6 @@
 
 #define dout_subsys ceph_subsys_rgw
 
-using namespace std;
 
 bool LCExpiration_S3::xml_end(const char * el) {
   LCDays_S3 *lc_days = static_cast<LCDays_S3 *>(find_first("Days"));
@@ -65,6 +64,8 @@ bool LCMPExpiration_S3::xml_end(const char *el) {
 bool RGWLifecycleConfiguration_S3::xml_end(const char *el) {
   XMLObjIter iter = find("Rule");
   LCRule_S3 *rule = static_cast<LCRule_S3 *>(iter.get_next());
+  if (!rule)
+    return false;
   while (rule) {
     add_rule(rule);
     rule = static_cast<LCRule_S3 *>(iter.get_next());

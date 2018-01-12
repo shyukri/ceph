@@ -40,6 +40,15 @@ static ostream& _prefix(std::ostream *_dout, Monitor *mon,
 const static std::string command_descs_prefix = "mgr_command_descs";
 
 
+version_t MgrMonitor::get_trim_to() const
+{
+  int64_t max = g_conf->get_val<int64_t>("mon_max_mgrmap_epochs");
+  if (map.epoch > max) {
+    return map.epoch - max;
+  }
+  return 0;
+}
+
 void MgrMonitor::create_initial()
 {
   // Take a local copy of initial_modules for tokenizer to iterate over.
@@ -104,7 +113,7 @@ void MgrMonitor::update_from_paxos(bool *need_bootstrap)
         derr << "Failed to load mgr commands: " << cpp_strerror(r) << dendl;
       } else {
         auto p = loaded_commands.begin();
-        ::decode(command_descs, p);
+        decode(command_descs, p);
       }
     }
   }
@@ -180,7 +189,7 @@ void MgrMonitor::encode_pending(MonitorDBStore::TransactionRef t)
       p.set_flag(MonCommand::FLAG_MGR);
     }
     bufferlist bl;
-    ::encode(pending_command_descs, bl);
+    encode(pending_command_descs, bl);
     t->put(command_descs_prefix, "", bl);
     pending_command_descs.clear();
   }
@@ -357,7 +366,7 @@ bool MgrMonitor::prepare_beacon(MonOpRequestRef op)
     pending_map.active_gid = m->get_gid();
     pending_map.active_name = m->get_name();
     pending_map.available_modules = m->get_available_modules();
-    ::encode(m->get_metadata(), pending_metadata[m->get_name()]);
+    encode(m->get_metadata(), pending_metadata[m->get_name()]);
     pending_metadata_rm.erase(m->get_name());
 
     mon->clog->info() << "Activating manager daemon "
@@ -383,7 +392,7 @@ bool MgrMonitor::prepare_beacon(MonOpRequestRef op)
                          << " started";
       pending_map.standbys[m->get_gid()] = {m->get_gid(), m->get_name(),
 					    m->get_available_modules()};
-      ::encode(m->get_metadata(), pending_metadata[m->get_name()]);
+      encode(m->get_metadata(), pending_metadata[m->get_name()]);
       pending_metadata_rm.erase(m->get_name());
       updated = true;
     }
@@ -442,14 +451,15 @@ void MgrMonitor::send_digests()
 {
   cancel_timer();
 
-  if (!is_active()) {
-    return;
-  }
-  dout(10) << __func__ << dendl;
-
   const std::string type = "mgrdigest";
   if (mon->session_map.subs.count(type) == 0)
     return;
+
+  if (!is_active()) {
+    // if paxos is currently not active, don't send a digest but reenable timer
+    goto timer;
+  }
+  dout(10) << __func__ << dendl;
 
   for (auto sub : *(mon->session_map.subs[type])) {
     dout(10) << __func__ << " sending digest to subscriber " << sub->session->con
@@ -469,6 +479,7 @@ void MgrMonitor::send_digests()
     sub->session->con->send_message(mdigest);
   }
 
+timer:
   digest_event = mon->timer.add_event_after(
     g_conf->get_val<int64_t>("mon_mgr_digest_period"),
     new C_MonContext(mon, [this](int) {
@@ -924,7 +935,7 @@ int MgrMonitor::load_metadata(const string& name, std::map<string, string>& m,
     return r;
   try {
     bufferlist::iterator p = bl.begin();
-    ::decode(m, p);
+    decode(m, p);
   }
   catch (buffer::error& e) {
     if (err)

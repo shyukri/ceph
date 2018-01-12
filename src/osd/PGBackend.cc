@@ -830,7 +830,7 @@ map<pg_shard_t, ScrubMap *>::const_iterator
         ss_bl.push_back(k->second);
         try {
 	  bufferlist::iterator bliter = ss_bl.begin();
-	  ::decode(ss, bliter);
+	  decode(ss, bliter);
         } catch (...) {
 	  // invalid snapset, probably corrupt
 	  shard_info.set_ss_attr_corrupted();
@@ -849,7 +849,7 @@ map<pg_shard_t, ScrubMap *>::const_iterator
     bl.push_back(k->second);
     try {
       bufferlist::iterator bliter = bl.begin();
-      ::decode(oi, bliter);
+      decode(oi, bliter);
     } catch (...) {
       // invalid object info, probably corrupt
       shard_info.set_oi_attr_corrupted();
@@ -951,7 +951,7 @@ void PGBackend::be_compare_scrubmaps(
     set<pg_shard_t> cur_missing;
     set<pg_shard_t> cur_inconsistent;
 
-    for (auto  j = maps.cbegin(); j != maps.cend(); ++j) {
+    for (auto j = maps.cbegin(); j != maps.cend(); ++j) {
       if (j == auth)
 	shard_map[auth->first].selected_oi = true;
       if (j->second->objects.count(*k)) {

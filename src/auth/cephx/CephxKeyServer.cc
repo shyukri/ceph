@@ -200,7 +200,7 @@ int KeyServer::_rotate_secret(uint32_t service_id)
     } else {
       utime_t next_ttl = now;
       next_ttl += ttl;
-      ek.expiration = MAX(next_ttl, r.next().expiration);
+      ek.expiration = std::max(next_ttl, r.next().expiration);
     }
     ek.expiration += ttl;
     uint64_t secret_id = r.add(ek);
@@ -329,7 +329,8 @@ int KeyServer::encode_secrets(Formatter *f, stringstream *ds) const
       bufferlist *bl = const_cast<bufferlist*>(&capsiter->second);
       bufferlist::iterator dataiter = bl->begin();
       string caps;
-      ::decode(caps, dataiter);
+      using ceph::decode;
+      decode(caps, dataiter);
       if (ds)
         *ds << "\tcaps: [" << capsiter->first << "] " << caps << std::endl;
       if (f)

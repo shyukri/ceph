@@ -12,7 +12,6 @@
 
 #include "common/errno.h"
 #include "common/ceph_json.h"
-#include "common/backport14.h"
 #include "rgw_rados.h"
 #include "rgw_acl.h"
 #include "rgw_acl_s3.h"
@@ -34,12 +33,11 @@
 
 #define BUCKET_TAG_TIMEOUT 30
 
-using namespace std;
 
 static RGWMetadataHandler *bucket_meta_handler = NULL;
 static RGWMetadataHandler *bucket_instance_meta_handler = NULL;
 
-// define as static when RGWBucket implementation compete
+// define as static when RGWBucket implementation completes
 void rgw_get_buckets_obj(const rgw_user& user_id, string& buckets_obj_id)
 {
   buckets_obj_id = user_id.to_str();
@@ -184,7 +182,8 @@ int rgw_link_bucket(RGWRados* const store,
                     const rgw_user& user_id,
                     rgw_bucket& bucket,
                     ceph::real_time creation_time,
-                    bool update_entrypoint)
+                    bool update_entrypoint,
+                    bool update_stats)
 {
   int ret;
   string& tenant_name = bucket.tenant;
@@ -217,7 +216,7 @@ int rgw_link_bucket(RGWRados* const store,
   rgw_get_buckets_obj(user_id, buckets_obj_id);
 
   rgw_raw_obj obj(store->get_zone_params().user_uid_pool, buckets_obj_id);
-  ret = store->cls_user_add_bucket(obj, new_bucket);
+  ret = store->cls_user_add_bucket(obj, new_bucket, update_stats);
   if (ret < 0) {
     ldout(store->ctx(), 0) << "ERROR: error adding bucket to directory: "
                            << cpp_strerror(-ret) << dendl;
@@ -421,7 +420,7 @@ int rgw_bucket_set_attrs(RGWRados *store, RGWBucketInfo& bucket_info,
   string key = bucket.get_key();
   bufferlist bl;
 
-  ::encode(bucket_info, bl);
+  encode(bucket_info, bl);
 
   return rgw_bucket_instance_store_info(store, key, bl, false, &attrs, objv_tracker, real_time());
 }
@@ -843,7 +842,7 @@ int RGWBucket::link(RGWBucketAdminOpState& op_state, std::string *err_msg)
     ACLOwner owner;
     try {
      bufferlist::iterator iter = aclbl.begin();
-     ::decode(policy, iter);
+     decode(policy, iter);
      owner = policy.get_owner();
     } catch (buffer::error& err) {
       set_err_msg(err_msg, "couldn't decode policy");
@@ -891,7 +890,7 @@ int RGWBucket::link(RGWBucketAdminOpState& op_state, std::string *err_msg)
     }
 
     r = rgw_link_bucket(store, user_info.user_id, bucket_info.bucket,
-                        ceph::real_time());
+                        ceph::real_time(),true, op_state.will_update_stats());
     if (r < 0) {
       return r;
     }
@@ -914,6 +913,27 @@ int RGWBucket::unlink(RGWBucketAdminOpState& op_state, std::string *err_msg)
     set_err_msg(err_msg, "error unlinking bucket" + cpp_strerror(-r));
   }
 
+  return r;
+}
+
+int RGWBucket::set_quota(RGWBucketAdminOpState& op_state, std::string *err_msg)
+{
+  rgw_bucket bucket = op_state.get_bucket();
+  RGWBucketInfo bucket_info;
+  map<string, bufferlist> attrs;
+  RGWObjectCtx obj_ctx(store);
+  int r = store->get_bucket_info(obj_ctx, bucket.tenant, bucket.name, bucket_info, NULL, &attrs);
+  if (r < 0) {
+    set_err_msg(err_msg, "could not get bucket info for bucket=" + bucket.name + ": " + cpp_strerror(-r));
+    return r;
+  }
+
+  bucket_info.quota = op_state.quota;
+  r = store->put_bucket_instance_info(bucket_info, false, real_time(), &attrs);
+  if (r < 0) {
+    set_err_msg(err_msg, "ERROR: failed writing bucket instance info: " + cpp_strerror(-r));
+    return r;
+  }
   return r;
 }
 
@@ -1546,17 +1566,8 @@ int RGWBucketAdminOp::limit_check(RGWRados *store,
 int RGWBucketAdminOp::info(RGWRados *store, RGWBucketAdminOpState& op_state,
                   RGWFormatterFlusher& flusher)
 {
-  RGWBucket bucket;
-  int ret;
-
+  int ret = 0;
   string bucket_name = op_state.get_bucket_name();
-
-  if (!bucket_name.empty()) {
-    ret = bucket.init(store, op_state);
-    if (ret < 0)
-      return ret;
-  }
-
   Formatter *formatter = flusher.get_formatter();
   flusher.start(0);
 
@@ -1584,7 +1595,11 @@ int RGWBucketAdminOp::info(RGWRados *store, RGWBucketAdminOpState& op_state,
       map<string, RGWBucketEnt>::iterator iter;
 
       for (iter = m.begin(); iter != m.end(); ++iter) {
-        std::string  obj_name = iter->first;
+        std::string obj_name = iter->first;
+        if (!bucket_name.empty() && bucket_name != obj_name) {
+          continue;
+        }
+
         if (show_stats)
           bucket_stats(store, user_id.tenant, obj_name, formatter);
         else
@@ -1598,7 +1613,10 @@ int RGWBucketAdminOp::info(RGWRados *store, RGWBucketAdminOpState& op_state,
 
     formatter->close_section();
   } else if (!bucket_name.empty()) {
-    bucket_stats(store, user_id.tenant, bucket_name, formatter);
+    ret = bucket_stats(store, user_id.tenant, bucket_name, formatter);
+    if (ret < 0) {
+      return ret;
+    }
   } else {
     RGWAccessHandle handle;
 
@@ -1621,6 +1639,15 @@ int RGWBucketAdminOp::info(RGWRados *store, RGWBucketAdminOpState& op_state,
   return 0;
 }
 
+int RGWBucketAdminOp::set_quota(RGWRados *store, RGWBucketAdminOpState& op_state)
+{
+  RGWBucket bucket;
+
+  int ret = bucket.init(store, op_state);
+  if (ret < 0)
+    return ret;
+  return bucket.set_quota(op_state);
+}
 
 void rgw_data_change::dump(Formatter *f) const
 {
@@ -1705,7 +1732,7 @@ int RGWDataChangesLog::renew_entries()
     change.entity_type = ENTITY_TYPE_BUCKET;
     change.key = bs.get_key();
     change.timestamp = ut;
-    ::encode(change, bl);
+    encode(change, bl);
 
     store->time_log_prepare_entry(entry, ut, section, change.key, bl);
 
@@ -1840,7 +1867,7 @@ int RGWDataChangesLog::add_entry(rgw_bucket& bucket, int shard_id) {
     change.entity_type = ENTITY_TYPE_BUCKET;
     change.key = bs.get_key();
     change.timestamp = now;
-    ::encode(change, bl);
+    encode(change, bl);
     string section;
 
     ldout(cct, 20) << "RGWDataChangesLog::add_entry() sending update with now=" << now << " cur_expiration=" << expiration << dendl;
@@ -1891,7 +1918,7 @@ int RGWDataChangesLog::list_entries(int shard, const real_time& start_time, cons
     log_entry.log_timestamp = rt;
     bufferlist::iterator liter = iter->data.begin();
     try {
-      ::decode(log_entry.entry, liter);
+      decode(log_entry.entry, liter);
     } catch (buffer::error& err) {
       lderr(cct) << "ERROR: failed to decode data changes log entry" << dendl;
       return -EIO;
@@ -2162,7 +2189,7 @@ public:
   }
 
   int list_keys_init(RGWRados *store, const string& marker, void **phandle) override {
-    auto info = ceph::make_unique<list_keys_info>();
+    auto info = std::make_unique<list_keys_info>();
 
     info->store = store;
 
@@ -2361,7 +2388,7 @@ public:
   }
 
   int list_keys_init(RGWRados *store, const string& marker, void **phandle) override {
-    auto info = ceph::make_unique<list_keys_info>();
+    auto info = std::make_unique<list_keys_info>();
 
     info->store = store;
 

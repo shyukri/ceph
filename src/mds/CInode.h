@@ -492,19 +492,6 @@ public:
     else
       return NULL;
   }
-  sr_t *get_projected_srnode() {
-    if (num_projected_srnodes > 0) {
-      for (std::list<projected_inode_t*>::reverse_iterator p = projected_nodes.rbegin();
-	   p != projected_nodes.rend();
-	   ++p)
-	if ((*p)->snapnode)
-	  return (*p)->snapnode;
-    }
-    if (snaprealm)
-      return &snaprealm->srnode;
-    else
-      return NULL;
-  }
   void project_past_snaprealm_parent(SnapRealm *newparent);
 
 private:
@@ -527,11 +514,12 @@ private:
 public:
   bool has_dirfrags() { return !dirfrags.empty(); }
   CDir* get_dirfrag(frag_t fg) {
-    if (dirfrags.count(fg)) {
+    auto pi = dirfrags.find(fg);
+    if (pi != dirfrags.end()) {
       //assert(g_conf->debug_mds < 2 || dirfragtree.is_leaf(fg)); // performance hack FIXME
-      return dirfrags[fg];
-    } else
-      return NULL;
+      return pi->second;
+    } 
+    return NULL;
   }
   bool get_dirfrags_under(frag_t fg, std::list<CDir*>& ls);
   CDir* get_approx_dirfrag(frag_t fg);
@@ -603,26 +591,28 @@ protected:
     clear_flock_lock_state();
   }
   void _encode_file_locks(bufferlist& bl) const {
+    using ceph::encode;
     bool has_fcntl_locks = fcntl_locks && !fcntl_locks->empty();
-    ::encode(has_fcntl_locks, bl);
+    encode(has_fcntl_locks, bl);
     if (has_fcntl_locks)
-      ::encode(*fcntl_locks, bl);
+      encode(*fcntl_locks, bl);
     bool has_flock_locks = flock_locks && !flock_locks->empty();
-    ::encode(has_flock_locks, bl);
+    encode(has_flock_locks, bl);
     if (has_flock_locks)
-      ::encode(*flock_locks, bl);
+      encode(*flock_locks, bl);
   }
   void _decode_file_locks(bufferlist::iterator& p) {
+    using ceph::decode;
     bool has_fcntl_locks;
-    ::decode(has_fcntl_locks, p);
+    decode(has_fcntl_locks, p);
     if (has_fcntl_locks)
-      ::decode(*get_fcntl_lock_state(), p);
+      decode(*get_fcntl_lock_state(), p);
     else
       clear_fcntl_lock_state();
     bool has_flock_locks;
-    ::decode(has_flock_locks, p);
+    decode(has_flock_locks, p);
     if (has_flock_locks)
-      ::decode(*get_flock_lock_state(), p);
+      decode(*get_flock_lock_state(), p);
     else
       clear_flock_lock_state();
   }
@@ -728,8 +718,13 @@ public:
   inode_t& get_inode() { return inode; }
   CDentry* get_parent_dn() { return parent; }
   const CDentry* get_parent_dn() const { return parent; }
-  const CDentry* get_projected_parent_dn() const { return !projected_parent.empty() ? projected_parent.back() : parent; }
   CDentry* get_projected_parent_dn() { return !projected_parent.empty() ? projected_parent.back() : parent; }
+  const CDentry* get_projected_parent_dn() const { return !projected_parent.empty() ? projected_parent.back() : parent; }
+  const CDentry* get_oldest_parent_dn() const {
+    if (parent)
+      return parent;
+    return !projected_parent.empty() ? projected_parent.front(): NULL;
+  }
   CDir *get_parent_dir();
   const CDir *get_projected_parent_dir() const;
   CDir *get_projected_parent_dir();
@@ -742,7 +737,8 @@ public:
   }
 
   // -- misc -- 
-  bool is_projected_ancestor_of(CInode *other);
+  bool is_ancestor_of(const CInode *other) const;
+  bool is_projected_ancestor_of(const CInode *other) const;
 
   void make_path_string(std::string& s, bool projected=false, const CDentry *use_parent=NULL) const;
   void make_path(filepath& s, bool projected=false) const;
@@ -802,14 +798,16 @@ public:
       replicate_relax_locks();
     
     __u32 nonce = add_replica(rep);
-    ::encode(nonce, bl);
+    using ceph::encode;
+    encode(nonce, bl);
     
     _encode_base(bl, features);
     _encode_locks_state_for_replica(bl, need_recover);
   }
   void decode_replica(bufferlist::iterator& p, bool is_new) {
+    using ceph::decode;
     __u32 nonce;
-    ::decode(nonce, p);
+    decode(nonce, p);
     replica_nonce = nonce;
     
     _decode_base(p);

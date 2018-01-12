@@ -763,7 +763,7 @@ public:
                                                       entrypoint, NULL, &result));
       }
       if (retcode < 0) {
-        ldout(sync_env->cct, 0) << "ERROR: failed to fetch metadata for section bucket.index" << dendl;
+        ldout(sync_env->cct, 0) << "ERROR: failed to fetch metadata for section bucket.instance" << dendl;
         return set_cr_error(retcode);
       }
       entries_index = new RGWShardedOmapCRManager(sync_env->async_rados, store, this, num_shards,
@@ -771,7 +771,7 @@ public:
                                                   oid_prefix);
       yield; // yield so OmapAppendCRs can start
       for (iter = result.begin(); iter != result.end(); ++iter) {
-        ldout(sync_env->cct, 20) << "list metadata: section=bucket.index key=" << *iter << dendl;
+        ldout(sync_env->cct, 20) << "list metadata: section=bucket.instance key=" << *iter << dendl;
 
         key = *iter;
 
@@ -1037,10 +1037,13 @@ public:
       }
 
       if (sync_status < 0) {
-        yield call(sync_env->error_logger->log_error_cr(sync_env->conn->get_remote_id(), "data", raw_key,
-                                                        -sync_status, string("failed to sync bucket instance: ") + cpp_strerror(-sync_status)));
-        if (retcode < 0) {
-          tn->log(0, SSTR("ERROR: failed to log sync failure: retcode=" << retcode));
+        // write actual sync failures for 'radosgw-admin sync error list'
+        if (sync_status != -EBUSY && sync_status != -EAGAIN) {
+          yield call(sync_env->error_logger->log_error_cr(sync_env->conn->get_remote_id(), "data", raw_key,
+                                                          -sync_status, string("failed to sync bucket instance: ") + cpp_strerror(-sync_status)));
+          if (retcode < 0) {
+            tn->log(0, SSTR("ERROR: failed to log sync failure: retcode=" << retcode));
+          }
         }
         if (error_repo && !error_repo->append(raw_key)) {
           tn->log(0, SSTR("ERROR: failed to log sync failure in error repo: retcode=" << retcode));
@@ -1298,7 +1301,6 @@ public:
       }
       if (retcode < 0) {
         tn->log(0, SSTR("ERROR: failed to set sync marker: retcode=" << retcode));
-        lease_cr->go_down();
         return set_cr_error(retcode);
       }
     }
@@ -1775,7 +1777,9 @@ int RGWDataSyncStatusManager::init()
 
   RGWZoneParams& zone_params = store->get_zone_params();
 
-  sync_module = store->get_sync_module();
+  if (sync_module == nullptr) { 
+    sync_module = store->get_sync_module();
+  }
 
   conn = store->get_zone_conn_by_id(source_zone);
   if (!conn) {
@@ -1958,7 +1962,7 @@ static void decode_attr(CephContext *cct, map<string, bufferlist>& attrs, const 
 
   bufferlist::iterator biter = iter->second.begin();
   try {
-    ::decode(*val, biter);
+    decode(*val, biter);
   } catch (buffer::error& err) {
     ldout(cct, 0) << "ERROR: failed to decode attribute: " << attr_name << dendl;
   }
@@ -1980,17 +1984,20 @@ void rgw_bucket_shard_sync_info::encode_all_attrs(map<string, bufferlist>& attrs
 
 void rgw_bucket_shard_sync_info::encode_state_attr(map<string, bufferlist>& attrs)
 {
-  ::encode(state, attrs["state"]);
+  using ceph::encode;
+  encode(state, attrs["state"]);
 }
 
 void rgw_bucket_shard_full_sync_marker::encode_attr(map<string, bufferlist>& attrs)
 {
-  ::encode(*this, attrs["full_marker"]);
+  using ceph::encode;
+  encode(*this, attrs["full_marker"]);
 }
 
 void rgw_bucket_shard_inc_sync_marker::encode_attr(map<string, bufferlist>& attrs)
 {
-  ::encode(*this, attrs["inc_marker"]);
+  using ceph::encode;
+  encode(*this, attrs["inc_marker"]);
 }
 
 class RGWReadBucketSyncStatusCoroutine : public RGWCoroutine {

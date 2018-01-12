@@ -62,7 +62,7 @@ static bool bl_eq(bufferlist& expected, bufferlist& actual)
          << "expected 0x" << expected.length() << " != actual 0x"
          << actual.length() << std::dec << dendl;
   }
-  auto len = MIN(expected.length(), actual.length());
+  auto len = std::min(expected.length(), actual.length());
   while ( first<len && expected[first] == actual[first])
     ++first;
   unsigned last = len;
@@ -428,7 +428,7 @@ TEST_P(StoreTest, FiemapEmpty) {
     store->fiemap(cid, oid, 0, 100000, bl);
     map<uint64_t,uint64_t> m, e;
     bufferlist::iterator p = bl.begin();
-    ::decode(m, p);
+    decode(m, p);
     cout << " got " << m << std::endl;
     e[0] = 100000;
     EXPECT_TRUE(m == e || m.empty());
@@ -467,7 +467,7 @@ TEST_P(StoreTest, FiemapHoles) {
     store->fiemap(cid, oid, 0, SKIP_STEP * (MAX_EXTENTS - 1) + 3, bl);
     map<uint64_t,uint64_t> m, e;
     bufferlist::iterator p = bl.begin();
-    ::decode(m, p);
+    decode(m, p);
     cout << " got " << m << std::endl;
     ASSERT_TRUE(!m.empty());
     ASSERT_GE(m[0], 3u);
@@ -487,7 +487,7 @@ TEST_P(StoreTest, FiemapHoles) {
     store->fiemap(cid, oid, SKIP_STEP, SKIP_STEP * (MAX_EXTENTS - 2) + 3, bl);
     map<uint64_t,uint64_t> m, e;
     auto p = bl.begin();
-    ::decode(m, p);
+    decode(m, p);
     cout << " got " << m << std::endl;
     ASSERT_TRUE(!m.empty());
     // kstore always returns [0, object_size] regardless of offset and length
@@ -612,8 +612,8 @@ TEST_P(StoreTest, SimpleColPreHashTest) {
     t.create_collection(cid, 5);
     cerr << "create collection" << std::endl;
     bufferlist hint;
-    ::encode(pg_num, hint);
-    ::encode(expected_num_objs, hint);
+    encode(pg_num, hint);
+    encode(expected_num_objs, hint);
     t.collection_hint(cid, ObjectStore::Transaction::COLL_HINT_EXPECTED_NUM_OBJECTS, hint);
     cerr << "collection hint" << std::endl;
     r = apply_transaction(store, &osr, std::move(t));
@@ -2388,6 +2388,7 @@ TEST_P(StoreTest, SimpleAttrTest) {
     r = apply_transaction(store, &osr, std::move(t));
     ASSERT_EQ(r, 0);
   }
+  osr.flush();
   {
     bool empty;
     int r = store->collection_empty(cid, &empty);
@@ -2407,6 +2408,7 @@ TEST_P(StoreTest, SimpleAttrTest) {
     r = apply_transaction(store, &osr, std::move(t));
     ASSERT_EQ(r, 0);
   }
+  osr.flush();
   {
     bool empty;
     int r = store->collection_empty(cid, &empty);
@@ -2465,6 +2467,7 @@ TEST_P(StoreTest, SimpleListTest) {
     r = apply_transaction(store, &osr, std::move(t));
     ASSERT_EQ(r, 0);
   }
+  osr.flush();
   {
     set<ghobject_t> saw;
     vector<ghobject_t> objects;
@@ -2529,6 +2532,7 @@ TEST_P(StoreTest, ListEndTest) {
     r = apply_transaction(store, &osr, std::move(t));
     ASSERT_EQ(r, 0);
   }
+  osr.flush();
   {
     ghobject_t end(hobject_t(sobject_t("object_100", CEPH_NOSNAP)),
 		   ghobject_t::NO_GEN, shard_id_t(1));
@@ -2611,6 +2615,7 @@ TEST_P(StoreTest, MultipoolListTest) {
     r = apply_transaction(store, &osr, std::move(t));
     ASSERT_EQ(r, 0);
   }
+  osr.flush();
   {
     vector<ghobject_t> objects;
     ghobject_t next, current;
@@ -3276,6 +3281,8 @@ TEST_P(StoreTest, ManyObjectTest) {
     ASSERT_TRUE(!store->stat(cid, *i, &buf));
   }
 
+  osr.flush();
+
   set<ghobject_t> listed, listed2;
   vector<ghobject_t> objects;
   r = store->collection_list(cid, ghobject_t(), ghobject_t::get_max(), INT_MAX, &objects, 0);
@@ -3533,6 +3540,7 @@ public:
   }
   void shutdown() {
     while (1) {
+      osr->flush();
       vector<ghobject_t> objects;
       int r = store->collection_list(cid, ghobject_t(), ghobject_t::get_max(),
 				     10, &objects, 0);
@@ -4140,6 +4148,7 @@ public:
     EnterExit ee("scan");
     while (in_flight)
       cond.Wait(lock);
+    osr->flush();
     vector<ghobject_t> objects;
     set<ghobject_t> objects_set, objects_set2;
     ghobject_t next, current;
@@ -4563,6 +4572,7 @@ TEST_P(StoreTest, HashCollisionTest) {
   }
   }
   vector<ghobject_t> objects;
+  osr.flush();
   r = store->collection_list(cid, ghobject_t(), ghobject_t::get_max(), INT_MAX, &objects, 0);
   ASSERT_EQ(r, 0);
   set<ghobject_t> listed(objects.begin(), objects.end());
@@ -4660,6 +4670,7 @@ TEST_P(StoreTest, ScrubTest) {
     ASSERT_EQ(r, 0);
   }
 
+  osr.flush();
   vector<ghobject_t> objects;
   r = store->collection_list(cid, ghobject_t(), ghobject_t::get_max(),
 			     INT_MAX, &objects, 0);
@@ -5134,6 +5145,7 @@ void colsplittest(
     ASSERT_EQ(r, 0);
   }
 
+  osr.flush();
   ObjectStore::Transaction t;
   vector<ghobject_t> objects;
   r = store->collection_list(cid, ghobject_t(), ghobject_t::get_max(),
@@ -5154,6 +5166,7 @@ void colsplittest(
     }
   }
 
+  osr.flush();
   objects.clear();
   r = store->collection_list(tid, ghobject_t(), ghobject_t::get_max(),
 			     INT_MAX, &objects, 0);
@@ -5430,6 +5443,8 @@ TEST_P(StoreTest, BigRGWObjectName) {
     r = apply_transaction(store, &osr, std::move(t));
     ASSERT_EQ(r, 0);
   }
+
+  osr.flush();
 
   {
     vector<ghobject_t> objects;
@@ -6718,6 +6733,42 @@ TEST_P(StoreTestSpecificAUSize, garbageCollection) {
   g_conf->apply_changes(NULL);
 }
 #endif
+
+TEST_P(StoreTestSpecificAUSize, fsckOnUnalignedDevice) {
+  if (string(GetParam()) != "bluestore")
+    return;
+
+  g_conf->set_val("bluestore_block_size", stringify(0x280005000)); //10 Gb + 4K
+  g_conf->set_val("bluestore_fsck_on_mount", "false");
+  g_conf->set_val("bluestore_fsck_on_umount", "false");
+  StartDeferred(0x4000);
+  store->umount();
+  ASSERT_EQ(store->fsck(false), 0); // do fsck explicitly
+  store->mount();
+
+  g_conf->set_val("bluestore_fsck_on_mount", "true");
+  g_conf->set_val("bluestore_fsck_on_umount", "true");
+  g_conf->set_val("bluestore_block_size", stringify(0x280000000)); // 10 Gb
+  g_conf->apply_changes(NULL);
+}
+
+TEST_P(StoreTestSpecificAUSize, fsckOnUnalignedDevice2) {
+  if (string(GetParam()) != "bluestore")
+    return;
+
+  g_conf->set_val("bluestore_block_size", stringify(0x280005000)); //10 Gb + 20K
+  g_conf->set_val("bluestore_fsck_on_mount", "false");
+  g_conf->set_val("bluestore_fsck_on_umount", "false");
+  StartDeferred(0x1000);
+  store->umount();
+  ASSERT_EQ(store->fsck(false), 0); // do fsck explicitly
+  store->mount();
+
+  g_conf->set_val("bluestore_block_size", stringify(0x280000000)); // 10 Gb
+  g_conf->set_val("bluestore_fsck_on_mount", "true");
+  g_conf->set_val("bluestore_fsck_on_umount", "true");
+  g_conf->apply_changes(NULL);
+}
 
 int main(int argc, char **argv) {
   vector<const char*> args;

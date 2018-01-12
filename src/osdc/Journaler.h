@@ -149,25 +149,25 @@ public:
 
     void encode(bufferlist &bl) const {
       ENCODE_START(2, 2, bl);
-      ::encode(magic, bl);
-      ::encode(trimmed_pos, bl);
-      ::encode(expire_pos, bl);
-      ::encode(unused_field, bl);
-      ::encode(write_pos, bl);
-      ::encode(layout, bl, 0);  // encode in legacy format
-      ::encode(stream_format, bl);
+      encode(magic, bl);
+      encode(trimmed_pos, bl);
+      encode(expire_pos, bl);
+      encode(unused_field, bl);
+      encode(write_pos, bl);
+      encode(layout, bl, 0);  // encode in legacy format
+      encode(stream_format, bl);
       ENCODE_FINISH(bl);
     }
     void decode(bufferlist::iterator &bl) {
       DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, bl);
-      ::decode(magic, bl);
-      ::decode(trimmed_pos, bl);
-      ::decode(expire_pos, bl);
-      ::decode(unused_field, bl);
-      ::decode(write_pos, bl);
-      ::decode(layout, bl);
+      decode(magic, bl);
+      decode(trimmed_pos, bl);
+      decode(expire_pos, bl);
+      decode(unused_field, bl);
+      decode(write_pos, bl);
+      decode(layout, bl);
       if (struct_v > 1) {
-	::decode(stream_format, bl);
+	decode(stream_format, bl);
       } else {
 	stream_format = JOURNAL_FORMAT_LEGACY;
       }
@@ -253,6 +253,7 @@ private:
   static const int STATE_ACTIVE = 3;
   static const int STATE_REREADHEAD = 4;
   static const int STATE_REPROBING = 5;
+  static const int STATE_STOPPING = 6;
 
   int state;
   int error;
@@ -411,7 +412,7 @@ public:
     fetch_len(0), temp_fetch_len(0),
     on_readable(0), on_write_error(NULL), called_write_error(false),
     expire_pos(0), trimming_pos(0), trimmed_pos(0), readable(false),
-    write_iohint(0), stopping(false)
+    write_iohint(0)
   {
   }
 
@@ -510,8 +511,6 @@ public:
    * to -EAGAIN.
    */
   void shutdown();
-protected:
-  bool stopping;
 public:
 
   // Synchronous getters
@@ -522,6 +521,7 @@ public:
   }
   file_layout_t& get_layout() { return layout; }
   bool is_active() { return state == STATE_ACTIVE; }
+  bool is_stopping() { return state == STATE_STOPPING; }
   int get_error() { return error; }
   bool is_readonly() { return readonly; }
   bool is_readable();

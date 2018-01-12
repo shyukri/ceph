@@ -53,7 +53,7 @@ class Logger;
 
 
 static inline void encode(const map<string,bufferptr> *attrset, bufferlist &bl) {
-  ::encode(*attrset, bl);
+  encode(*attrset, bl);
 }
 
 // this isn't the best place for these, but...
@@ -587,16 +587,29 @@ public:
       assert(out_on_commit);
       assert(out_on_applied_sync);
       list<Context *> on_applied, on_commit, on_applied_sync;
-      for (vector<Transaction>::iterator i = t.begin();
-	   i != t.end();
-	   ++i) {
-	on_applied.splice(on_applied.end(), (*i).on_applied);
-	on_commit.splice(on_commit.end(), (*i).on_commit);
-	on_applied_sync.splice(on_applied_sync.end(), (*i).on_applied_sync);
+      for (auto& i : t) {
+	on_applied.splice(on_applied.end(), i.on_applied);
+	on_commit.splice(on_commit.end(), i.on_commit);
+	on_applied_sync.splice(on_applied_sync.end(), i.on_applied_sync);
       }
       *out_on_applied = C_Contexts::list_to_context(on_applied);
       *out_on_commit = C_Contexts::list_to_context(on_commit);
       *out_on_applied_sync = C_Contexts::list_to_context(on_applied_sync);
+    }
+    static void collect_contexts(
+      vector<Transaction>& t,
+      list<Context*> *out_on_applied,
+      list<Context*> *out_on_commit,
+      list<Context*> *out_on_applied_sync) {
+      assert(out_on_applied);
+      assert(out_on_commit);
+      assert(out_on_applied_sync);
+      for (auto& i : t) {
+	out_on_applied->splice(out_on_applied->end(), i.on_applied);
+	out_on_commit->splice(out_on_commit->end(), i.on_commit);
+	out_on_applied_sync->splice(out_on_applied_sync->end(),
+				    i.on_applied_sync);
+      }
     }
 
     Context *get_on_applied() {
@@ -719,7 +732,7 @@ public:
         break;
 
       default:
-        assert(0 == "Unkown OP");
+        assert(0 == "Unknown OP");
       }
     }
     void _update_op_bl(
@@ -821,10 +834,11 @@ public:
 
     /// Retain old version for regression testing purposes
     uint64_t get_encoded_bytes_test() {
+      using ceph::encode;
       //layout: data_bl + op_bl + coll_index + object_index + data
       bufferlist bl;
-      ::encode(coll_index, bl);
-      ::encode(object_index, bl);
+      encode(coll_index, bl);
+      encode(object_index, bl);
 
       return data_bl.length() +
 	op_bl.length() +
@@ -936,27 +950,33 @@ public:
         return op;
       }
       string decode_string() {
+	using ceph::decode;
         string s;
-        ::decode(s, data_bl_p);
+        decode(s, data_bl_p);
         return s;
       }
       void decode_bp(bufferptr& bp) {
-        ::decode(bp, data_bl_p);
+	using ceph::decode;
+        decode(bp, data_bl_p);
       }
       void decode_bl(bufferlist& bl) {
-        ::decode(bl, data_bl_p);
+	using ceph::decode;
+        decode(bl, data_bl_p);
       }
       void decode_attrset(map<string,bufferptr>& aset) {
-        ::decode(aset, data_bl_p);
+	using ceph::decode;
+        decode(aset, data_bl_p);
       }
       void decode_attrset(map<string,bufferlist>& aset) {
-        ::decode(aset, data_bl_p);
+	using ceph::decode;
+        decode(aset, data_bl_p);
       }
       void decode_attrset_bl(bufferlist *pbl) {
 	decode_str_str_map_to_bl(data_bl_p, pbl);
       }
       void decode_keyset(set<string> &keys){
-        ::decode(keys, data_bl_p);
+	using ceph::decode;
+        decode(keys, data_bl_p);
       }
       void decode_keyset_bl(bufferlist *pbl){
         decode_str_set_to_bl(data_bl_p, pbl);
@@ -1056,6 +1076,7 @@ public:
      */
     void write(const coll_t& cid, const ghobject_t& oid, uint64_t off, uint64_t len,
 	       const bufferlist& write_data, uint32_t flags = 0) {
+      using ceph::encode;
       uint32_t orig_len = data_bl.length();
       Op* _op = _get_next_op();
       _op->op = OP_WRITE;
@@ -1063,7 +1084,7 @@ public:
       _op->oid = _get_object_id(oid);
       _op->off = off;
       _op->len = len;
-      ::encode(write_data, data_bl);
+      encode(write_data, data_bl);
 
       assert(len == write_data.length());
       data.fadvise_flags = data.fadvise_flags | flags;
@@ -1117,30 +1138,33 @@ public:
     }
     /// Set an xattr of an object
     void setattr(const coll_t& cid, const ghobject_t& oid, const string& s, bufferlist& val) {
+      using ceph::encode;
       Op* _op = _get_next_op();
       _op->op = OP_SETATTR;
       _op->cid = _get_coll_id(cid);
       _op->oid = _get_object_id(oid);
-      ::encode(s, data_bl);
-      ::encode(val, data_bl);
+      encode(s, data_bl);
+      encode(val, data_bl);
       data.ops++;
     }
     /// Set multiple xattrs of an object
     void setattrs(const coll_t& cid, const ghobject_t& oid, const map<string,bufferptr>& attrset) {
+      using ceph::encode;
       Op* _op = _get_next_op();
       _op->op = OP_SETATTRS;
       _op->cid = _get_coll_id(cid);
       _op->oid = _get_object_id(oid);
-      ::encode(attrset, data_bl);
+      encode(attrset, data_bl);
       data.ops++;
     }
     /// Set multiple xattrs of an object
     void setattrs(const coll_t& cid, const ghobject_t& oid, const map<string,bufferlist>& attrset) {
+      using ceph::encode;
       Op* _op = _get_next_op();
       _op->op = OP_SETATTRS;
       _op->cid = _get_coll_id(cid);
       _op->oid = _get_object_id(oid);
-      ::encode(attrset, data_bl);
+      encode(attrset, data_bl);
       data.ops++;
     }
     /// remove an xattr from an object
@@ -1150,11 +1174,12 @@ public:
     }
     /// remove an xattr from an object
     void rmattr(const coll_t& cid, const ghobject_t& oid, const string& s) {
+      using ceph::encode;
       Op* _op = _get_next_op();
       _op->op = OP_RMATTR;
       _op->cid = _get_coll_id(cid);
       _op->oid = _get_object_id(oid);
-      ::encode(s, data_bl);
+      encode(s, data_bl);
       data.ops++;
     }
     /// remove all xattrs from an object
@@ -1229,11 +1254,12 @@ public:
      *               data along with the hint type.
      */
     void collection_hint(const coll_t& cid, uint32_t type, const bufferlist& hint) {
+      using ceph::encode;
       Op* _op = _get_next_op();
       _op->op = OP_COLL_HINT;
       _op->cid = _get_coll_id(cid);
       _op->hint_type = type;
-      ::encode(hint, data_bl);
+      encode(hint, data_bl);
       data.ops++;
     }
 
@@ -1298,11 +1324,12 @@ public:
       const ghobject_t &oid,                ///< [in] Object to update
       const map<string, bufferlist> &attrset ///< [in] Replacement keys and values
       ) {
+      using ceph::encode;
       Op* _op = _get_next_op();
       _op->op = OP_OMAP_SETKEYS;
       _op->cid = _get_coll_id(cid);
       _op->oid = _get_object_id(oid);
-      ::encode(attrset, data_bl);
+      encode(attrset, data_bl);
       data.ops++;
     }
 
@@ -1326,11 +1353,12 @@ public:
       const ghobject_t &oid,  ///< [in] Object from which to remove the omap
       const set<string> &keys ///< [in] Keys to clear
       ) {
+      using ceph::encode;
       Op* _op = _get_next_op();
       _op->op = OP_OMAP_RMKEYS;
       _op->cid = _get_coll_id(cid);
       _op->oid = _get_object_id(oid);
-      ::encode(keys, data_bl);
+      encode(keys, data_bl);
       data.ops++;
     }
 
@@ -1355,12 +1383,13 @@ public:
       const string& first,    ///< [in] first key in range
       const string& last      ///< [in] first key past range, range is [first,last)
       ) {
+        using ceph::encode;
 	Op* _op = _get_next_op();
 	_op->op = OP_OMAP_RMKEYRANGE;
 	_op->cid = _get_coll_id(cid);
 	_op->oid = _get_object_id(oid);
-	::encode(first, data_bl);
-	::encode(last, data_bl);
+	encode(first, data_bl);
+	encode(last, data_bl);
 	data.ops++;
       }
 
@@ -1370,11 +1399,12 @@ public:
       const ghobject_t &oid,  ///< [in] Object
       const bufferlist &bl    ///< [in] Header value
       ) {
+      using ceph::encode;
       Op* _op = _get_next_op();
       _op->op = OP_OMAP_SETHEADER;
       _op->cid = _get_coll_id(cid);
       _op->oid = _get_object_id(oid);
-      ::encode(bl, data_bl);
+      encode(bl, data_bl);
       data.ops++;
     }
 
@@ -1426,10 +1456,10 @@ public:
     void encode(bufferlist& bl) const {
       //layout: data_bl + op_bl + coll_index + object_index + data
       ENCODE_START(9, 9, bl);
-      ::encode(data_bl, bl);
-      ::encode(op_bl, bl);
-      ::encode(coll_index, bl);
-      ::encode(object_index, bl);
+      encode(data_bl, bl);
+      encode(op_bl, bl);
+      encode(coll_index, bl);
+      encode(object_index, bl);
       data.encode(bl);
       ENCODE_FINISH(bl);
     }
@@ -1438,10 +1468,10 @@ public:
       DECODE_START(9, bl);
       DECODE_OLDEST(9);
 
-      ::decode(data_bl, bl);
-      ::decode(op_bl, bl);
-      ::decode(coll_index, bl);
-      ::decode(object_index, bl);
+      decode(data_bl, bl);
+      decode(op_bl, bl);
+      decode(coll_index, bl);
+      decode(object_index, bl);
       data.decode(bl);
       coll_id = coll_index.size();
       object_id = object_index.size();
@@ -1565,6 +1595,11 @@ public:
   /// enumerate hardware devices (by 'devname', e.g., 'sda' as in /sys/block/sda)
   virtual int get_devices(std::set<string> *devls) {
     return -EOPNOTSUPP;
+  }
+
+  /// true if a txn is readable immediately after it is queued.
+  virtual bool is_sync_onreadable() const {
+    return true;
   }
 
   /**

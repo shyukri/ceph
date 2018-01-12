@@ -115,6 +115,7 @@ void usage(ostream& out)
 "                                    in the object's object map\n"
 "   setomapval <obj-name> <key> <val>\n"
 "   rmomapkey <obj-name> <key>\n"
+"   clearomap <obj-name> [obj-name2 obj-name3...] clear all the omap keys for the specified objects\n"
 "   getomapheader <obj-name> [file]\n"
 "   setomapheader <obj-name> <val>\n"
 "   tmap-to-omap <obj-name>          convert tmap keys/values to omap\n"
@@ -123,6 +124,10 @@ void usage(ostream& out)
 "   listwatchers <obj-name>          list the watchers of this object\n"
 "   set-alloc-hint <obj-name> <expected-object-size> <expected-write-size>\n"
 "                                    set allocation hint for an object\n"
+"   set-redirect <object A> --target-pool <caspool> <target object A>\n"
+"                                    set redirect target\n"
+"   set-chunk <object A> <offset> <length> --target-pool <caspool> <target object A> <taget-offset>\n"
+"                                    convert an object to chunked object\n"
 "\n"
 "IMPORT AND EXPORT\n"
 "   export [filename]\n"
@@ -231,7 +236,7 @@ void usage(ostream& out)
 
 unsigned default_op_size = 1 << 22;
 
-static void usage_exit()
+[[noreturn]] static void usage_exit()
 {
   usage(cerr);
   exit(1);
@@ -1369,7 +1374,7 @@ static void dump_shard(const shard_info_t& shard,
     map<std::string, ceph::bufferlist>::iterator k = (const_cast<shard_info_t&>(shard)).attrs.find(OI_ATTR);
     assert(k != shard.attrs.end()); // Can't be missing
     bufferlist::iterator bliter = k->second.begin();
-    ::decode(oi, bliter);  // Can't be corrupted
+    decode(oi, bliter);  // Can't be corrupted
     f.dump_stream("object_info") << oi;
   }
   if (inc.has_attr_name_mismatch() || inc.has_attr_value_mismatch()
@@ -1445,7 +1450,7 @@ static void dump_inconsistent(const inconsistent_obj_t& inc,
       auto k = shard.attrs.find(OI_ATTR);
       assert(k != shard.attrs.end()); // Can't be missing
       bufferlist::iterator bliter = k->second.begin();
-      ::decode(oi, bliter);  // Can't be corrupted
+      decode(oi, bliter);  // Can't be corrupted
       f.dump_stream("selected_object_info") << oi;
       break;
     }
@@ -2589,6 +2594,21 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     } else {
       ret = 0;
     }
+  } else if (strcmp(nargs[0], "clearomap") == 0) {
+    if (!pool_name || nargs.size() < 2) {
+      usage_exit();
+    }
+
+    for (unsigned i=1; i < nargs.size(); i++){
+      string oid(nargs[i]);
+      ret = io_ctx.omap_clear(oid);
+      if (ret < 0) {
+        cerr << "error clearing omap keys " << pool_name << "/" << oid << "/"
+             << cpp_strerror(ret) << std::endl;
+        goto out;
+      }
+    }
+    ret = 0;
   } else if (strcmp(nargs[0], "listomapvals") == 0) {
     if (!pool_name || nargs.size() < 2)
       usage_exit();
@@ -2722,8 +2742,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       bufferlist header;
       map<string, bufferlist> kv;
       try {
-	::decode(header, p);
-	::decode(kv, p);
+	decode(header, p);
+	decode(kv, p);
       }
       catch (buffer::error& e) {
 	cerr << "error decoding tmap " << pool_name << "/" << oid << std::endl;
@@ -2749,9 +2769,9 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       string v(nargs[4]);
       bufferlist bl;
       char c = (strcmp(nargs[1], "set") == 0) ? CEPH_OSD_TMAP_SET : CEPH_OSD_TMAP_CREATE;
-      ::encode(c, bl);
-      ::encode(k, bl);
-      ::encode(v, bl);
+      encode(c, bl);
+      encode(k, bl);
+      encode(v, bl);
       ret = io_ctx.tmap_update(oid, bl);
     }
   }
@@ -2773,8 +2793,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     map<string, bufferlist> kv;
     bufferlist::iterator p = bl.begin();
     try {
-      ::decode(hdr, p);
-      ::decode(kv, p);
+      decode(hdr, p);
+      decode(kv, p);
     }
     catch (buffer::error& e) {
       cerr << "error decoding tmap " << pool_name << "/" << oid << std::endl;
@@ -3095,7 +3115,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     string oid(nargs[1]);
     string msg(nargs[2]);
     bufferlist bl, replybl;
-    ::encode(msg, bl);
+    encode(msg, bl);
     ret = io_ctx.notify2(oid, bl, 10000, &replybl);
     if (ret != 0)
       cerr << "error calling notify: " << cpp_strerror(ret) << std::endl;
@@ -3103,8 +3123,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       map<pair<uint64_t,uint64_t>,bufferlist> rm;
       set<pair<uint64_t,uint64_t> > missed;
       bufferlist::iterator p = replybl.begin();
-      ::decode(rm, p);
-      ::decode(missed, p);
+      decode(rm, p);
+      decode(missed, p);
       for (map<pair<uint64_t,uint64_t>,bufferlist>::iterator p = rm.begin();
 	   p != rm.end();
 	   ++p) {
@@ -3510,6 +3530,54 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     ret = io_ctx.operate(nargs[1], &op);
     if (ret < 0) {
       cerr << "error set-redirect " << pool_name << "/" << nargs[1] << " => " << target << "/" << target_obj << ": " << cpp_strerror(ret) << std::endl;
+      goto out;
+    }
+  } else if (strcmp(nargs[0], "set-chunk") == 0) {
+    if (!pool_name)
+      usage_exit();
+
+    const char *target = target_pool_name;
+    if (!target)
+      target = pool_name;
+
+    uint64_t offset;
+    uint64_t length;
+    uint64_t tgt_offset;
+    string tgt_oid;
+    if (nargs.size() < 6) {
+      usage_exit();
+    } else {
+      char* endptr = NULL;
+      offset = strtoull(nargs[2], &endptr, 10);
+      if (*endptr) {
+	cerr << "Invalid value for size: '" << nargs[2] << "'" << std::endl;
+	ret = -EINVAL;
+	goto out;
+      }
+      length = strtoull(nargs[3], &endptr, 10);
+      if (*endptr) {
+	cerr << "Invalid value for size: '" << nargs[2] << "'" << std::endl;
+	ret = -EINVAL;
+	goto out;
+      }
+      tgt_oid = string(nargs[4]);
+      tgt_offset = strtoull(nargs[5], &endptr, 10);
+      if (*endptr) {
+	cerr << "Invalid value for size: '" << nargs[2] << "'" << std::endl;
+	ret = -EINVAL;
+	goto out;
+      }
+    }
+
+    IoCtx target_ctx;
+    ret = rados.ioctx_create(target, target_ctx);
+    ObjectWriteOperation op;
+    op.set_chunk(offset, length, target_ctx, tgt_oid, tgt_offset);
+    ret = io_ctx.operate(nargs[1], &op);
+    if (ret < 0) {
+      cerr << "error set-chunk " << pool_name << "/" << nargs[1] << " " << " offset " << offset
+	    << " length " << length << " target_pool " << target 
+	    << "tgt_offset: " << tgt_offset << " : " << cpp_strerror(ret) << std::endl;
       goto out;
     }
   } else if (strcmp(nargs[0], "export") == 0) {

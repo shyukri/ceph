@@ -226,8 +226,8 @@ public:
   uint64_t get(int idx) const;
 
   void tset(int idx, utime_t v);
-  void tinc(int idx, utime_t v, uint32_t avgcount = 1);
-  void tinc(int idx, ceph::timespan v, uint32_t avgcount = 1);
+  void tinc(int idx, utime_t v);
+  void tinc(int idx, ceph::timespan v);
   utime_t tget(int idx) const;
 
   void hinc(int idx, int64_t x, int64_t y);
@@ -351,6 +351,24 @@ private:
   friend class PerfCountersCollectionTest;
 };
 
+
+class PerfGuard {
+  const ceph::real_clock::time_point start;
+  PerfCounters* const counters;
+  const int event;
+
+public:
+  PerfGuard(PerfCounters* const counters,
+            const int event)
+  : start(ceph::real_clock::now()),
+    counters(counters),
+    event(event) {
+  }
+
+  ~PerfGuard() {
+    counters->tinc(event, ceph::real_clock::now() - start);
+  }
+};
 
 
 class PerfCountersDeleter {

@@ -3,7 +3,7 @@ import argparse
 import logging
 import os
 from textwrap import dedent
-from ceph_volume import process, conf, decorators
+from ceph_volume import process, conf, decorators, terminal
 from ceph_volume.util import system, disk
 from ceph_volume.util import prepare as prepare_utils
 from ceph_volume.systemd import systemctl
@@ -39,12 +39,12 @@ def activate_filestore(lvs):
     source = osd_lv.lv_path
     destination = '/var/lib/ceph/osd/%s-%s' % (conf.cluster, osd_id)
     if not system.device_is_mounted(source, destination=destination):
-        process.run(['sudo', 'mount', '-v', source, destination])
+        process.run(['mount', '-v', source, destination])
 
     # always re-do the symlink regardless if it exists, so that the journal
     # device path that may have changed can be mapped correctly every time
     destination = '/var/lib/ceph/osd/%s-%s/journal' % (conf.cluster, osd_id)
-    process.run(['sudo', 'ln', '-snf', osd_journal, destination])
+    process.run(['ln', '-snf', osd_journal, destination])
 
     # make sure that the journal has proper permissions
     system.chown(osd_journal)
@@ -103,22 +103,22 @@ def activate_bluestore(lvs):
             os.unlink(os.path.join(osd_path, link_name))
     # Once symlinks are removed, the osd dir can be 'primed again.
     process.run([
-        'sudo', 'ceph-bluestore-tool', '--cluster=%s' % conf.cluster,
+        'ceph-bluestore-tool', '--cluster=%s' % conf.cluster,
         'prime-osd-dir', '--dev', osd_lv.lv_path,
         '--path', osd_path])
     # always re-do the symlink regardless if it exists, so that the block,
     # block.wal, and block.db devices that may have changed can be mapped
     # correctly every time
-    process.run(['sudo', 'ln', '-snf', osd_lv.lv_path, os.path.join(osd_path, 'block')])
+    process.run(['ln', '-snf', osd_lv.lv_path, os.path.join(osd_path, 'block')])
     system.chown(os.path.join(osd_path, 'block'))
     system.chown(osd_path)
     if db_device_path:
         destination = os.path.join(osd_path, 'block.db')
-        process.run(['sudo', 'ln', '-snf', db_device_path, destination])
+        process.run(['ln', '-snf', db_device_path, destination])
         system.chown(db_device_path)
     if wal_device_path:
         destination = os.path.join(osd_path, 'block.wal')
-        process.run(['sudo', 'ln', '-snf', wal_device_path, destination])
+        process.run(['ln', '-snf', wal_device_path, destination])
         system.chown(wal_device_path)
 
     # enable the ceph-volume unit for this OSD
@@ -161,6 +161,7 @@ class Activate(object):
             activate_bluestore(lvs)
         elif args.filestore:
             activate_filestore(lvs)
+        terminal.success("ceph-volume lvm activate successful for osd ID: %s" % args.osd_id)
 
     def main(self):
         sub_command_help = dedent("""
@@ -212,6 +213,6 @@ class Activate(object):
         args = parser.parse_args(self.argv)
         # Default to bluestore here since defaulting it in add_argument may
         # cause both to be True
-        if args.bluestore is None and args.filestore is None:
+        if not args.bluestore and not args.filestore:
             args.bluestore = True
         self.activate(args)

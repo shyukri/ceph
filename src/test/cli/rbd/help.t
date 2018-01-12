@@ -24,12 +24,15 @@ Skip test on FreeBSD as it generates different output there.
       feature enable                    Enable the specified image feature.
       flatten                           Fill clone with parent data (make it
                                         independent).
-      group create                      Create a consistency group.
-      group image add                   Add an image to a consistency group.
-      group image list                  List images in a consistency group.
-      group image remove                Remove an image from a consistency group.
-      group list (group ls)             List rbd consistency groups.
-      group remove (group rm)           Delete a consistency group.
+      group create                      Create a group.
+      group image add                   Add an image to a group.
+      group image list                  List images in a group.
+      group image remove                Remove an image from a group.
+      group list (group ls)             List rbd groups.
+      group remove (group rm)           Delete a group.
+      group snap create                 Make a snapshot of a group.
+      group snap list                   List snapshots of a group.
+      group snap remove (group snap rm) Remove a snapshot from a group.
       image-meta get                    Image metadata get the value associated
                                         with the key.
       image-meta list (image-meta ls)   Image metadata list keys with values.
@@ -63,7 +66,7 @@ Skip test on FreeBSD as it generates different output there.
                                         mirroring.
       mirror image resync               Force resync to primary image for RBD
                                         mirroring.
-      mirror image status               Show RDB mirroring status for an image.
+      mirror image status               Show RBD mirroring status for an image.
       mirror pool demote                Demote all primary images in the pool.
       mirror pool disable               Disable RBD mirroring by default within a
                                         pool.
@@ -446,7 +449,7 @@ Skip test on FreeBSD as it generates different output there.
   usage: rbd group create [--pool <pool>] [--group <group>] 
                           <group-spec> 
   
-  Create a consistency group.
+  Create a group.
   
   Positional arguments
     <group-spec>         group specification
@@ -462,7 +465,7 @@ Skip test on FreeBSD as it generates different output there.
                              [--pool <pool>] 
                              <group-spec> <image-spec> 
   
-  Add an image to a consistency group.
+  Add an image to a group.
   
   Positional arguments
     <group-spec>         group specification
@@ -482,7 +485,7 @@ Skip test on FreeBSD as it generates different output there.
                               [--pool <pool>] [--group <group>] 
                               <group-spec> 
   
-  List images in a consistency group.
+  List images in a group.
   
   Positional arguments
     <group-spec>         group specification
@@ -500,7 +503,7 @@ Skip test on FreeBSD as it generates different output there.
                                 [--pool <pool>] [--image-id <image-id>] 
                                 <group-spec> <image-spec> 
   
-  Remove an image from a consistency group.
+  Remove an image from a group.
   
   Positional arguments
     <group-spec>         group specification
@@ -519,7 +522,7 @@ Skip test on FreeBSD as it generates different output there.
   rbd help group list
   usage: rbd group list [--pool <pool>] [--format <format>] [--pretty-format] 
   
-  List rbd consistency groups.
+  List rbd groups.
   
   Optional arguments
     -p [ --pool ] arg    pool name
@@ -530,7 +533,7 @@ Skip test on FreeBSD as it generates different output there.
   usage: rbd group remove [--pool <pool>] [--group <group>] 
                           <group-spec> 
   
-  Delete a consistency group.
+  Delete a group.
   
   Positional arguments
     <group-spec>         group specification
@@ -539,6 +542,53 @@ Skip test on FreeBSD as it generates different output there.
   Optional arguments
     -p [ --pool ] arg    pool name
     --group arg          group name
+  
+  rbd help group snap create
+  usage: rbd group snap create [--pool <pool>] [--group <group>] [--snap <snap>] 
+                               <group-spec> 
+  
+  Make a snapshot of a group.
+  
+  Positional arguments
+    <group-spec>         group specification
+                         (example: [<pool-name>/]<group-name>@<snap-name>)
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --group arg          group name
+    --snap arg           snapshot name
+  
+  rbd help group snap list
+  usage: rbd group snap list [--format <format>] [--pretty-format] 
+                             [--pool <pool>] [--group <group>] 
+                             <group-spec> 
+  
+  List snapshots of a group.
+  
+  Positional arguments
+    <group-spec>         group specification
+                         (example: [<pool-name>/]<group-name>)
+  
+  Optional arguments
+    --format arg         output format (plain, json, or xml) [default: plain]
+    --pretty-format      pretty formatting (json and xml)
+    -p [ --pool ] arg    pool name
+    --group arg          group name
+  
+  rbd help group snap remove
+  usage: rbd group snap remove [--pool <pool>] [--group <group>] [--snap <snap>] 
+                               <group-spec> 
+  
+  Remove a snapshot from a group.
+  
+  Positional arguments
+    <group-spec>         group specification
+                         (example: [<pool-name>/]<group-name>@<snap-name>)
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --group arg          group name
+    --snap arg           snapshot name
   
   rbd help image-meta get
   usage: rbd image-meta get [--pool <pool>] [--image <image>] 
@@ -1000,7 +1050,7 @@ Skip test on FreeBSD as it generates different output there.
                                  [--format <format>] [--pretty-format] 
                                  <image-spec> 
   
-  Show RDB mirroring status for an image.
+  Show RBD mirroring status for an image.
   
   Positional arguments
     <image-spec>         image specification
@@ -1075,7 +1125,7 @@ Skip test on FreeBSD as it generates different output there.
   Positional arguments
     <pool-name>              pool name
     <remote-cluster-spec>    remote cluster spec
-                             (example: [<client name>@]<cluster name>
+                             (example: [<client name>@]<cluster name>)
   
   Optional arguments
     -p [ --pool ] arg        pool name
@@ -1140,14 +1190,19 @@ Skip test on FreeBSD as it generates different output there.
     --verbose            be verbose
   
   rbd help nbd list
-  usage: rbd nbd list 
+  usage: rbd nbd list [--format <format>] [--pretty-format] 
   
   List the nbd devices already used.
+  
+  Optional arguments
+    --format arg         output format (plain, json, or xml) [default: plain]
+    --pretty-format      pretty formatting (json and xml)
   
   rbd help nbd map
   usage: rbd nbd map [--pool <pool>] [--image <image>] [--snap <snap>] 
                      [--read-only] [--exclusive] [--device <device>] 
                      [--nbds_max <nbds_max>] [--max_part <max_part>] 
+                     [--timeout <timeout>] 
                      <image-or-snap-spec> 
   
   Map image to a nbd device.
@@ -1165,15 +1220,23 @@ Skip test on FreeBSD as it generates different output there.
     --device arg          specify nbd device
     --nbds_max arg        override module param nbds_max
     --max_part arg        override module param max_part
+    --timeout arg         set nbd request timeout (seconds)
   
   rbd help nbd unmap
-  usage: rbd nbd unmap 
-                       <device-spec> 
+  usage: rbd nbd unmap [--pool <pool>] [--image <image>] [--snap <snap>] 
+                       <image-or-snap-or-device-spec> 
   
   Unmap a nbd device.
   
   Positional arguments
-    <device-spec>        specify nbd device
+    <image-or-snap-or-device-spec>  image, snapshot, or device specification
+                                    [<pool-name>/]<image-name>[@<snapshot-name>]
+                                    or <device-path>
+  
+  Optional arguments
+    -p [ --pool ] arg               pool name
+    --image arg                     image name
+    --snap arg                      snapshot name
   
   rbd help object-map check
   usage: rbd object-map check [--pool <pool>] [--image <image>] [--snap <snap>] 
@@ -1330,7 +1393,7 @@ Skip test on FreeBSD as it generates different output there.
   
   rbd help snap list
   usage: rbd snap list [--pool <pool>] [--image <image>] [--image-id <image-id>] 
-                       [--format <format>] [--pretty-format] 
+                       [--format <format>] [--pretty-format] [--all] 
                        <image-spec> 
   
   Dump list of image snapshots.
@@ -1345,6 +1408,7 @@ Skip test on FreeBSD as it generates different output there.
     --image-id arg       image id
     --format arg         output format (plain, json, or xml) [default: plain]
     --pretty-format      pretty formatting (json and xml)
+    -a [ --all ]         list snapshots from all namespaces
   
   rbd help snap protect
   usage: rbd snap protect [--pool <pool>] [--image <image>] [--snap <snap>] 

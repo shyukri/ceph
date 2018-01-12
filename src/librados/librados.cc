@@ -171,7 +171,7 @@ void librados::ObjectOperation::cmpxattr(const char *name, uint8_t op, uint64_t 
 {
   ::ObjectOperation *o = &impl->o;
   bufferlist bl;
-  ::encode(v, bl);
+  encode(v, bl);
   o->cmpxattr(name, op, CEPH_OSD_CMPXATTR_MODE_U64, bl);
 }
 
@@ -612,6 +612,17 @@ void librados::ObjectWriteOperation::set_redirect(const std::string& tgt_obj,
   ::ObjectOperation *o = &impl->o;
   o->set_redirect(object_t(tgt_obj), tgt_ioctx.io_ctx_impl->snap_seq,
 			  tgt_ioctx.io_ctx_impl->oloc, tgt_version);
+}
+
+void librados::ObjectWriteOperation::set_chunk(uint64_t src_offset,
+					       uint64_t src_length,
+					       const IoCtx& tgt_ioctx,
+					       string tgt_oid,
+					       uint64_t tgt_offset)
+{
+  ::ObjectOperation *o = &impl->o;
+  o->set_chunk(src_offset, src_length, 
+	       tgt_ioctx.io_ctx_impl->oloc, object_t(tgt_oid), tgt_offset);
 }
 
 void librados::ObjectWriteOperation::tmap_put(const bufferlist &bl)
