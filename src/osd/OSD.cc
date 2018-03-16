@@ -1881,15 +1881,7 @@ int OSD::write_meta(CephContext *cct, ObjectStore *store, uuid_d& cluster_fsid, 
     if (!keyfile.empty()) {
       bufferlist keybl;
       string err;
-      if (keyfile == "-") {
-	static_assert(1024 * 1024 >
-		      (sizeof(CryptoKey) - sizeof(bufferptr) +
-		       sizeof(__u16) + 16 /* AES_KEY_LEN */ + 3 - 1) / 3. * 4.,
-		      "1MB should be enough for a base64 encoded CryptoKey");
-	r = keybl.read_fd(STDIN_FILENO, 1024 * 1024);
-      } else {
-	r = keybl.read_file(keyfile.c_str(), &err);
-      }
+      r = keybl.read_file(keyfile.c_str(), &err);
       if (r < 0) {
 	derr << __func__ << " failed to read keyfile " << keyfile << ": "
 	     << err << ": " << cpp_strerror(r) << dendl;
@@ -2337,10 +2329,10 @@ will start to track new ops received afterwards.";
     store->get_devices(&devnames);
     f->open_object_section("list_devices");
     for (auto dev : devnames) {
-      f->dump_string("device", "/dev/" + dev);
       if (dev.find("dm-") == 0) {
 	continue;
       }
+      f->dump_string("device", "/dev/" + dev);
     }
     f->close_section();
   } else {
@@ -3742,26 +3734,27 @@ void OSD::recursive_remove_collection(CephContext* cct,
   ObjectStore::Transaction t;
   SnapMapper mapper(cct, &driver, 0, 0, 0, pgid.shard);
 
+  ghobject_t next;
+  int max = cct->_conf->osd_target_transaction_size;
   vector<ghobject_t> objects;
-  store->collection_list(ch, ghobject_t(), ghobject_t::get_max(),
-			 INT_MAX, &objects, 0);
-  generic_dout(10) << __func__ << " " << objects << dendl;
-  // delete them.
-  int removed = 0;
-  for (vector<ghobject_t>::iterator p = objects.begin();
-       p != objects.end();
-       ++p, removed++) {
-    OSDriver::OSTransaction _t(driver.get_transaction(&t));
-    int r = mapper.remove_oid(p->hobj, &_t);
-    if (r != 0 && r != -ENOENT)
-      ceph_abort();
-    t.remove(tmp, *p);
-    if (removed > cct->_conf->osd_target_transaction_size) {
-      int r = store->queue_transaction(ch, std::move(t));
-      assert(r == 0);
-      t = ObjectStore::Transaction();
-      removed = 0;
+  objects.reserve(max);
+  while (true) {
+    objects.clear();
+    store->collection_list(ch, next, ghobject_t::get_max(),
+      max, &objects, &next);
+    generic_dout(10) << __func__ << " " << objects << dendl;
+    if (objects.empty())
+      break;
+    for (auto& p: objects) {
+      OSDriver::OSTransaction _t(driver.get_transaction(&t));
+      int r = mapper.remove_oid(p.hobj, &_t);
+      if (r != 0 && r != -ENOENT)
+        ceph_abort();
+      t.remove(tmp, p);
     }
+    int r = store->queue_transaction(ch, std::move(t));
+    assert(r == 0);
+    t = ObjectStore::Transaction();
   }
   t.remove_collection(tmp);
   int r = store->queue_transaction(ch, std::move(t));
@@ -5828,6 +5821,14 @@ COMMAND("config set " \
 	"name=key,type=CephString name=value,type=CephString",
 	"Set a configuration option at runtime (not persistent)",
 	"osd", "rw", "cli,rest")
+COMMAND("config get " \
+	"name=key,type=CephString",
+	"Get a configuration option at runtime",
+	"osd", "r", "cli,rest")
+COMMAND("config unset " \
+	"name=key,type=CephString",
+	"Unset a configuration option at runtime (not persistent)",
+	"osd", "rw", "cli,rest")
 COMMAND("cluster_log " \
 	"name=level,type=CephChoices,strings=error,warning,info,debug " \
 	"name=message,type=CephString,n=N",
@@ -5951,7 +5952,28 @@ void OSD::do_command(Connection *con, ceph_tid_t tid, vector<string>& cmd, buffe
     cmd_getval(cct, cmdmap, "key", key);
     cmd_getval(cct, cmdmap, "value", val);
     osd_lock.Unlock();
-    r = cct->_conf->set_val(key, val, true, &ss);
+    r = cct->_conf->set_val(key, val, &ss);
+    if (r == 0) {
+      cct->_conf->apply_changes(nullptr);
+    }
+    osd_lock.Lock();
+  }
+  else if (prefix == "config get") {
+    std::string key;
+    cmd_getval(cct, cmdmap, "key", key);
+    osd_lock.Unlock();
+    std::string val;
+    r = cct->_conf->get_val(key, &val);
+    if (r == 0) {
+      ds << val;
+    }
+    osd_lock.Lock();
+  }
+  else if (prefix == "config unset") {
+    std::string key;
+    cmd_getval(cct, cmdmap, "key", key);
+    osd_lock.Unlock();
+    r = cct->_conf->rm_val(key);
     if (r == 0) {
       cct->_conf->apply_changes(nullptr);
     }
@@ -8294,8 +8316,11 @@ void OSD::dispatch_context_transaction(PG::RecoveryCtx &ctx, PG *pg,
 void OSD::dispatch_context(PG::RecoveryCtx &ctx, PG *pg, OSDMapRef curmap,
                            ThreadPool::TPHandle *handle)
 {
-  if (service.get_osdmap()->is_up(whoami) &&
-      is_active()) {
+  if (!service.get_osdmap()->is_up(whoami)) {
+    dout(20) << __func__ << " not up in osdmap" << dendl;
+  } else if (!is_active()) {
+    dout(20) << __func__ << " not active" << dendl;
+  } else {
     do_notifies(*ctx.notify_list, curmap);
     do_queries(*ctx.query_map, curmap);
     do_infos(*ctx.info_map, curmap);

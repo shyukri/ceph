@@ -191,7 +191,7 @@ void EventCenter::set_owner()
   if (!global_centers) {
     global_centers = &cct->lookup_or_create_singleton_object<
       EventCenter::AssociatedCenters>(
-	"AsyncMessenger::EventCenter::global_center::" + type);
+	"AsyncMessenger::EventCenter::global_center::" + type, true);
     assert(global_centers);
     global_centers->centers[idx] = this;
     if (driver->need_wakeup()) {
@@ -208,7 +208,7 @@ int EventCenter::create_file_event(int fd, int mask, EventCallbackRef ctxt)
   int r = 0;
   if (fd >= nevent) {
     int new_size = nevent << 2;
-    while (fd > new_size)
+    while (fd >= new_size)
       new_size <<= 2;
     ldout(cct, 20) << __func__ << " event count exceed " << nevent << ", expand to " << new_size << dendl;
     r = driver->resize_events(new_size);

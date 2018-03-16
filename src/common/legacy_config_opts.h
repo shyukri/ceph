@@ -568,8 +568,6 @@ OPTION(osd_max_write_size, OPT_INT)
 OPTION(osd_max_pgls, OPT_U64) // max number of pgls entries to return
 OPTION(osd_client_message_size_cap, OPT_U64) // client data allowed in-memory (in bytes)
 OPTION(osd_client_message_cap, OPT_U64)              // num client messages allowed in-memory
-OPTION(osd_pg_bits, OPT_INT)  // bits per osd
-OPTION(osd_pgp_bits, OPT_INT)  // bits per osd
 OPTION(osd_crush_update_weight_set, OPT_BOOL) // update weight set while updating weights
 OPTION(osd_crush_chooseleaf_type, OPT_INT) // 1 = host
 OPTION(osd_pool_use_gmt_hitset, OPT_BOOL) // try to use gmt for hitset archive names if all osds in cluster support it.
@@ -769,6 +767,7 @@ OPTION(osd_max_pg_log_entries, OPT_U32) // max entries, say when degraded, befor
 OPTION(osd_pg_log_dups_tracked, OPT_U32) // how many versions back to track combined in both pglog's regular + dup logs
 OPTION(osd_force_recovery_pg_log_entries_factor, OPT_FLOAT) // max entries factor before force recovery
 OPTION(osd_pg_log_trim_min, OPT_U32)
+OPTION(osd_pg_log_trim_max, OPT_U32)
 OPTION(osd_op_complaint_time, OPT_FLOAT) // how many seconds old makes an op complaint-worthy
 OPTION(osd_command_max_records, OPT_INT)
 OPTION(osd_max_pg_blocked_by, OPT_U32)    // max peer osds to report that are blocking our progress
@@ -839,8 +838,6 @@ OPTION(kinetic_hmac_key, OPT_STR) // kinetic key to authenticate with
 OPTION(kinetic_use_ssl, OPT_BOOL) // whether to secure kinetic traffic with TLS
 
 
-OPTION(rocksdb_separate_wal_dir, OPT_BOOL) // use $path.wal for wal
-SAFE_OPTION(rocksdb_db_paths, OPT_STR)   // path,size( path,size)*
 OPTION(rocksdb_log_to_ceph_log, OPT_BOOL)  // log to ceph log
 OPTION(rocksdb_cache_size, OPT_U64)  // rocksdb cache size (unless set by bluestore/etc)
 OPTION(rocksdb_cache_row_ratio, OPT_FLOAT)   // ratio of cache for row (vs block)

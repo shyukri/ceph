@@ -44,7 +44,7 @@
 #include "rgw_realm_watcher.h"
 #include "rgw_role.h"
 #include "rgw_reshard.h"
-
+#include "rgw_http_client_curl.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
@@ -2382,7 +2382,6 @@ int main(int argc, const char **argv)
 {
   vector<const char*> args;
   argv_to_vec(argc, (const char **)argv, args);
-  env_to_vec(args);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
                          CODE_ENVIRONMENT_UTILITY, 0);
@@ -3014,6 +3013,15 @@ int main(int argc, const char **argv)
 
   rgw_user_init(store);
   rgw_bucket_init(store->meta_mgr);
+
+  struct rgw_curl_setup {
+    rgw_curl_setup() {
+      rgw::curl::setup_curl(boost::none);
+    }
+    ~rgw_curl_setup() {
+      rgw::curl::cleanup_curl();
+    }
+  } curl_cleanup;
 
   StoreDestructor store_destructor(store);
 
@@ -6914,11 +6922,15 @@ next:
       return -ret;
 
     RGWDataChangesLog *log = store->data_log;
-    RGWDataChangesLog::LogMarker marker;
+    RGWDataChangesLog::LogMarker log_marker;
 
     do {
       list<rgw_data_change_log_entry> entries;
-      ret = log->list_entries(start_time.to_real_time(), end_time.to_real_time(), max_entries - count, entries, marker, &truncated);
+      if (specified_shard_id) {
+        ret = log->list_entries(shard_id, start_time.to_real_time(), end_time.to_real_time(), max_entries - count, entries, marker, NULL, &truncated);
+      } else {
+        ret = log->list_entries(start_time.to_real_time(), end_time.to_real_time(), max_entries - count, entries, log_marker, &truncated);
+      }
       if (ret < 0) {
         cerr << "ERROR: list_bi_log_entries(): " << cpp_strerror(-ret) << std::endl;
         return -ret;
