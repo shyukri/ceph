@@ -111,6 +111,9 @@ Requires(post):	binutils
 %if 0%{with cephfs_java}
 BuildRequires:	java-devel
 BuildRequires:	sharutils
+%if 0%{?suse_version}
+BuildRequires:  java-9-openjdk
+%endif
 %endif
 %if 0%{with selinux}
 BuildRequires:	checkpolicy
