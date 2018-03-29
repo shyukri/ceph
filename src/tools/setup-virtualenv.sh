@@ -18,7 +18,7 @@
 DIR=$1
 rm -fr $DIR
 mkdir -p $DIR
-virtualenv --python python2.7 $DIR
+virtualenv --python python3 $DIR
 . $DIR/bin/activate
 
 if pip --help | grep -q disable-pip-version-check; then
