@@ -7,8 +7,11 @@ import logging
 import os
 import subprocess
 import sys
+from collections import namedtuple
 
 import requests
+import six
+
 from ..mgr_test_case import MgrTestCase
 
 
@@ -73,36 +76,38 @@ class DashboardTestCase(MgrTestCase):
         self._session = requests.Session()
         self._resp = None
 
-    def _request(self, url, method, data=None):
+    def _request(self, url, method, data=None, params=None):
         url = "{}{}".format(self.base_uri, url)
+
         log.info("request %s to %s", method, url)
         if method == 'GET':
-            self._resp = self._session.get(url)
+            self._resp = self._session.get(url, params=params)
             try:
                 return self._resp.json()
             except ValueError as ex:
                 log.exception("Failed to decode response: %s", self._resp.text)
                 raise ex
         elif method == 'POST':
-            self._resp = self._session.post(url, json=data)
+            self._resp = self._session.post(url, json=data, params=params)
         elif method == 'DELETE':
-            self._resp = self._session.delete(url, json=data)
+            self._resp = self._session.delete(url, json=data, params=params)
         elif method == 'PUT':
-            self._resp = self._session.put(url, json=data)
+            self._resp = self._session.put(url, json=data, params=params)
         else:
             assert False
+        return None
 
-    def _get(self, url):
-        return self._request(url, 'GET')
+    def _get(self, url, params=None):
+        return self._request(url, 'GET', params=params)
 
-    def _post(self, url, data=None):
-        self._request(url, 'POST', data)
+    def _post(self, url, data=None, params=None):
+        self._request(url, 'POST', data, params=params)
 
-    def _delete(self, url, data=None):
-        self._request(url, 'DELETE', data)
+    def _delete(self, url, data=None, params=None):
+        self._request(url, 'DELETE', data, params=params)
 
-    def _put(self, url, data=None):
-        self._request(url, 'PUT', data)
+    def _put(self, url, data=None, params=None):
+        self._request(url, 'PUT', data, params=params)
 
     def cookies(self):
         return self._resp.cookies
@@ -116,6 +121,12 @@ class DashboardTestCase(MgrTestCase):
     def assertJsonBody(self, data):
         body = self._resp.json()
         self.assertEqual(body, data)
+
+    def assertSchema(self, data, schema):
+        try:
+            return _validate_json(data, schema)
+        except _ValError as e:
+            self.assertEqual(data, str(e))
 
     def assertBody(self, body):
         self.assertEqual(self._resp.text, body)
@@ -144,7 +155,86 @@ class DashboardTestCase(MgrTestCase):
         cls.mgr_cluster.admin_remote.run(args=args)
 
     @classmethod
+    def _radosgw_admin_cmd(cls, cmd):
+        args = [
+            'radosgw-admin'
+        ]
+        args.extend(cmd)
+        cls.mgr_cluster.admin_remote.run(args=args)
+
+    @classmethod
     def mons(cls):
         out = cls.ceph_cluster.mon_manager.raw_cluster_cmd('mon_status')
         j = json.loads(out)
         return [mon['name'] for mon in j['monmap']['mons']]
+
+
+class JLeaf(namedtuple('JLeaf', ['typ', 'none'])):
+    def __new__(cls, typ, none=False):
+        if typ == str:
+            typ = six.string_types
+        return super(JLeaf, cls).__new__(cls, typ, none)
+
+
+JList = namedtuple('JList', ['elem_typ'])
+
+JTuple = namedtuple('JList', ['elem_typs'])
+
+
+class JObj(namedtuple('JObj', ['sub_elems', 'allow_unknown'])):
+    def __new__(cls, sub_elems, allow_unknown=False):
+        """
+        :type sub_elems: dict[str, JAny | JLeaf | JList | JObj]
+        :type allow_unknown: bool
+        :return:
+        """
+        return super(JObj, cls).__new__(cls, sub_elems, allow_unknown)
+
+
+JAny = namedtuple('JAny', ['none'])
+
+
+class _ValError(Exception):
+    def __init__(self, msg, path):
+        path_str = ''.join('[{}]'.format(repr(p)) for p in path)
+        super(_ValError, self).__init__('In `input{}`: {}'.format(path_str, msg))
+
+
+def _validate_json(val, schema, path=[]):
+    """
+    >>> d = {'a': 1, 'b': 'x', 'c': range(10)}
+    ... ds = JObj({'a': JLeaf(int), 'b': JLeaf(str), 'c': JList(JLeaf(int))})
+    ... _validate_json(d, ds)
+    True
+    """
+    if isinstance(schema, JAny):
+        if not schema.none and val is None:
+            raise _ValError('val is None', path)
+        return True
+    if isinstance(schema, JLeaf):
+        if schema.none and val is None:
+            return True
+        if not isinstance(val, schema.typ):
+            raise _ValError('val not of type {}'.format(schema.typ), path)
+        return True
+    if isinstance(schema, JList):
+        return all(_validate_json(e, schema.elem_typ, path + [i]) for i, e in enumerate(val))
+    if isinstance(schema, JTuple):
+        return all(_validate_json(val[i], typ, path + [i])
+                   for i, typ in enumerate(schema.elem_typs))
+    if isinstance(schema, JObj):
+        missing_keys = set(schema.sub_elems.keys()).difference(set(val.keys()))
+        if missing_keys:
+            raise _ValError('missing keys: {}'.format(missing_keys), path)
+        unknown_keys = set(val.keys()).difference(set(schema.sub_elems.keys()))
+        if not schema.allow_unknown and unknown_keys:
+            raise _ValError('unknown keys: {}'.format(unknown_keys), path)
+        return all(
+            _validate_json(val[sub_elem_name], sub_elem, path + [sub_elem_name])
+            for sub_elem_name, sub_elem in schema.sub_elems.items()
+        )
+
+    assert False, str(path)
+
+
+

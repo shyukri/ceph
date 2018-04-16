@@ -69,6 +69,9 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
   // e.g. 'single' or 'multi'.
   @Input() selectionType: string = undefined;
 
+  // If `true` selected item details will be updated on table refresh
+  @Input() updateSelectionOnRefresh = true;
+
   /**
    * Should be a function to update the input data if undefined nothing will be triggered
    *
@@ -142,7 +145,9 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
       // Also if nothing is bound to fetchData nothing will be triggered
       // Force showing the loading indicator because it has been set to False in
       // useData() when this method was triggered by ngOnChanges().
-      this.loadingIndicator = true;
+      if (this.fetchData.observers.length > 0) {
+        this.loadingIndicator = true;
+      }
       this.ngZone.runOutsideAngular(() => {
         this.subscriber = Observable.timer(0, this.autoReload).subscribe(x => {
           this.ngZone.run(() => {
@@ -221,6 +226,27 @@ export class TableComponent implements AfterContentChecked, OnInit, OnChanges, O
     }
     this.loadingIndicator = false;
     this.updating = false;
+    if (this.updateSelectionOnRefresh) {
+      this.updateSelected();
+    }
+  }
+
+  /**
+   * After updating the data, we have to update the selected items
+   * because details may have changed,
+   * or some selected items may have been removed.
+   */
+  updateSelected() {
+    const newSelected = [];
+    this.selection.selected.forEach((selectedItem) => {
+      for (const row of this.data) {
+        if (selectedItem[this.identifier] === row[this.identifier]) {
+          newSelected.push(row);
+        }
+      }
+    });
+    this.selection.selected = newSelected;
+    this.onSelect();
   }
 
   onSelect() {
