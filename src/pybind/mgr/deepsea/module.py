@@ -50,6 +50,16 @@ class Module(MgrModule, Orchestrator):
             "cmd": "deepsea add-stateless-service name=type,type=CephString",
             "desc": "Add stateless service",
             "perm": "rw"
+        },
+        {
+            "cmd": "deepsea upgrade-start",
+            "desc": "Start upgrading ALL THE THINGS!",
+            "perm": "rw"
+        },
+        {
+            "cmd": "deepsea upgrade-status",
+            "desc": "Check the status of an upgrade in progress",
+            "perm": "rw"
         }
     ]
 
@@ -58,6 +68,11 @@ class Module(MgrModule, Orchestrator):
         super(Module, self).__init__(*args, **kwargs)
         self.event = Event()
         self.token = None
+
+        # TODO: this should really be some sort of list or dict of queued and
+        #       completed jobs, not just a special case for upgrades
+        self.upgrade_tag = None
+        self.upgrade_result = None
 
 
     def _config_valid(self):
@@ -96,6 +111,31 @@ class Module(MgrModule, Orchestrator):
             try:
                 ret = self.add_stateless_service(cmd['type'])
                 return 0, str(ret), ''
+
+            except Exception as ex:
+                return -errno.EINVAL, '', str(ex)
+
+        elif cmd['prefix'] == 'deepsea upgrade-start':
+            # for dev/test purposes
+            try:
+                if self.upgrade_start():
+                    return 0, 'Upgrade started', ''
+                else:
+                    return 0, 'Upgrade already in progress', ''
+
+            except Exception as ex:
+                return -errno.EINVAL, '', str(ex)
+
+        elif cmd['prefix'] == 'deepsea upgrade-status':
+            # for dev/test purposes
+            try:
+                s = self.upgrade_status()
+                if s.in_progress:
+                    return 0, "Upgrade in progress", ''
+                elif s.message:
+                    return 0, "Last upgrade result: " + s.message, ''
+                else:
+                    return 0, "No upgrade in progress", ''
 
             except Exception as ex:
                 return -errno.EINVAL, '', str(ex)
@@ -159,6 +199,9 @@ class Module(MgrModule, Orchestrator):
     # Note: this is pretty braindead and doesn't implement the full eventsource
     # spec, but it *does* implement enough for us to listen to events from salt
     # and potentially do something with them.
+    # TODO: How are we going to deal with salt-api dying, or mgr failing over,
+    #       or other unforeseen glitches when we're waiting for particular jobs
+    #       to complete?  What's to stop things falling through the cracks?
     def _read_sse(self):
         event = {}
         try:
@@ -184,6 +227,11 @@ class Module(MgrModule, Orchestrator):
                     # If we actually wanted to do something with the event,
                     # say, we want to notice that some long salt run has
                     # finished, we'd call some notify method here (TBD).
+                    # Right now, upgrade is the only thing that uses this
+                    # functionality, so it's special-cased here.
+                    if self.upgrade_tag and event['tag'] == self.upgrade_tag + "/ret":
+                        self.upgrade_result = json.loads(event['data'])
+                        self.upgrade_tag = None
 
                     # If you want to have some fun, try `salt '*' test.ping`
                     # on the master while this module is running with
@@ -284,6 +332,80 @@ class Module(MgrModule, Orchestrator):
     # services, but to do so you have to go edit the policy.cfg file and
     # run stage 5)
     def remove_stateless_service(self, service_type, id_):
+        raise NotImplementedError()
+
+
+    # DeepSea's stage 0 will upgrade everything (not just ceph) for which
+    # there's an upgrade available, but will do so in a sane order (MONs
+    # before OSDs, etc.)  As there's currently no means of checking
+    # what version of Ceph is available (or of requesting *only* Ceph be
+    # upgraded), UpgradeSpec() is not used.
+    #
+    # This returns immediately, to check the status of an upgrade in
+    # progress, try upgrade_status().
+    #
+    # The Orchestrator API doesn't define a return value for upgrade_start(),
+    # so here I've arbitrarily got it returning True if the upgrade start
+    # was triggered, False if there's an upgrade in progress already, or
+    # throwing an exception if something weird happened.
+    def upgrade_start(self, upgrade_spec=None):
+        if self.upgrade_tag:
+            # There's already (allegedly) an upgrade in progress, do nothing
+            # TODO: print the tag so the user can check the salt active job
+            #       queue themselves?
+            # TODO: provide a means of telling the system that no, really,
+            #       there's no upgrade in progress, in case mgr died or lost
+            #       connection to the salt event bus at just the wrong time,
+            #       and so never noticed that the job was complete?
+            # TODO: See if it's possible to check if an upgrade is already in
+            #       progress beacuse someone ran stage 0 by hand, not with mgr.
+            return False
+
+        resp = self._do_request_with_login("POST", data = {
+            "client": "runner_async",
+            "fun": "state.orch",
+            "arg": ["ceph.stage.0"]
+        })
+        data = resp.json()["return"][0]
+        if not 'tag' in data or not 'jid' in data:
+            raise Exception("async job missing tag and/or jid: {}".format(str(data)))
+
+        self.upgrade_tag = data['tag']
+        self.upgrade_result = None
+        return True
+
+
+    # One difficulty for status reporting is that it's easy to know when a
+    # given job started or finished, but for "ceph.stage.0", I don't know how
+    # (or if it's possible to) track events/states that were triggered as a
+    # result of the orchestration, i.e. I know *whether* an upgrade is running
+    # (at least, I know if an upgrade is running if it was triggered by mgr),
+    # but I have no way of knowing how far *through* the upgrade is.
+    def upgrade_status(self):
+        """
+        If an upgrade is currently underway, report on where
+        we are in the process, or if some error has occurred.
+
+        :return: UpgradeStatusSpec instance
+        """
+        status = UpgradeStatusSpec()
+        if self.upgrade_tag:
+            status.in_progress = True
+
+        elif self.upgrade_result:
+            if self.upgrade_result['data']['success']:
+                status.message = "Success"
+            else:
+                # If the job failed, the result will include potentially a
+                # large amount of information about status and broken things.
+                # TODO: parse this into something a lot nicer
+                status.message = json.dumps(self.upgrade_result)
+
+        return status
+
+
+    # DeepSea doesn't expose this
+    def upgrade_available(self):
         raise NotImplementedError()
 
 
