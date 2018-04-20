@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 
-disks = json.loads(subprocess.check_output("ceph-disk list --format json", shell=True))
+disks = json.loads(subprocess.check_output("ceph-disk list --format json", shell=True).decode("utf-8"))
 used = 0
 
 for disk in disks:
