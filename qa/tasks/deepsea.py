@@ -109,6 +109,10 @@ class DeepSea(Task):
         super(DeepSea, self).setup()
 
         if self.config["repo"] is '':
+            for _remote in self.ctx.cluster.remotes.iterkeys():
+                self.log.info("make sure all required salt packages installed for {}".format(_remote.hostname))
+                _remote.run(args = ['sudo', 'zypper', '--non-interactive',
+                    'salt-minion', 'salt-master', 'salt-api'])
             self.salt.master_remote.run(args=[
                 'sudo',
                 'zypper',
