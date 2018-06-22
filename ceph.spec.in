@@ -28,11 +28,7 @@
 %bcond_with valgrind_devel
 %endif
 
-%if 0%{?is_opensuse}
 %bcond_with xio
-%else
-%bcond_without xio
-%endif
 
 %bcond_without libs_compat
 %bcond_with lowmem_builder
