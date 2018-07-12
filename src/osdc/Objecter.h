@@ -343,13 +343,20 @@ struct ObjectOperation {
     void finish(int r) {
       bufferlist::iterator iter = bl.begin();
       if (r >= 0) {
-	try {
-	  ::decode(*extents, iter);
-	  ::decode(*data_bl, iter);
-	} catch (buffer::error& e) {
-	  if (prval)
-	    *prval = -EIO;
-	}
+        // NOTE: it's possible the sub-op has not been executed but the result
+        // code remains zeroed. Avoid the costly exception handling on a
+        // potential IO path.
+        if (bl.length() > 0) {
+	  try {
+	    ::decode(*extents, iter);
+	    ::decode(*data_bl, iter);
+	  } catch (buffer::error& e) {
+	    if (prval)
+              *prval = -EIO;
+	  }
+        } else if (prval) {
+          *prval = -EIO;
+        }
       }
     }
   };
@@ -1341,6 +1348,12 @@ public:
       return tid < other.tid;
     }
 
+    bool respects_full() const {
+      return
+	(target.flags & (CEPH_OSD_FLAG_WRITE | CEPH_OSD_FLAG_RWORDERED)) &&
+	!(target.flags & (CEPH_OSD_FLAG_FULL_TRY | CEPH_OSD_FLAG_FULL_FORCE));
+    }
+
   private:
     ~Op() {
       while (!out_handler.empty()) {
@@ -2146,6 +2159,7 @@ private:
   int _op_cancel(ceph_tid_t tid, int r);
 public:
   int op_cancel(ceph_tid_t tid, int r);
+  int op_cancel(const vector<ceph_tid_t>& tidls, int r);
 
   /**
    * Any write op which is in progress at the start of this call shall no

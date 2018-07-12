@@ -391,6 +391,7 @@ enum RGWOpType {
   RGW_OP_STAT_ACCOUNT,
   RGW_OP_LIST_BUCKET,
   RGW_OP_GET_BUCKET_LOGGING,
+  RGW_OP_GET_BUCKET_LOCATION,
   RGW_OP_GET_BUCKET_VERSIONING,
   RGW_OP_SET_BUCKET_VERSIONING,
   RGW_OP_GET_BUCKET_WEBSITE,
@@ -1907,5 +1908,8 @@ extern void    calc_hash_sha256_update_stream(SHA256 *hash, const char *msg, int
 extern string  calc_hash_sha256_close_stream(SHA256 **hash);
 
 extern int rgw_parse_op_type_list(const string& str, uint32_t *perm);
+
+void rgw_setup_saved_curl_handles();
+void rgw_release_all_curl_handles();
 
 #endif
