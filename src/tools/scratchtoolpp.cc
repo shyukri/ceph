@@ -284,6 +284,8 @@ int main(int argc, const char **argv)
   r = rados.pool_delete("foo");
   cout << "pool_delete result=" << r << std::endl;
 
+  cout << "Thank you and have a nice day!" << std::endl;
+
   rados.shutdown();
 
   return 0;
