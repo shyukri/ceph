@@ -40,7 +40,7 @@ fi
 rm -f config.cache
 aclocal -I m4 --install
 check_for_pkg_config
-$LIBTOOLIZE --force --copy
+$LIBTOOLIZE --force --copy || true
 aclocal -I m4 --install
 autoconf
 autoheader
