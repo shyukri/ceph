@@ -1,4 +1,4 @@
 overrides:
   deepsea:
     exec:
-    - suites/basic/health-ok.sh --cli --mds
+    - suites/basic/health-ok.sh --mds

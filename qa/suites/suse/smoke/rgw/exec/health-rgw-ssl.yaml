@@ -1,4 +1,4 @@
 overrides:
   deepsea:
     exec:
-    - suites/basic/health-ok.sh --cli --rgw --ssl
+    - suites/basic/health-ok.sh --rgw --ssl
