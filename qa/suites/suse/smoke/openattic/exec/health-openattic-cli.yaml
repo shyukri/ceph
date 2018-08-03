@@ -1,4 +1,4 @@
 overrides:
   deepsea:
     exec:
-    - suites/basic/health-openattic.sh --cli
+    - BASH_XTRACEFD=1 suites/basic/health-openattic.sh --cli
