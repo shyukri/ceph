@@ -1873,6 +1873,14 @@ class Validation(DeepSea):
         """
         self.config[validation_test] = self.config.get(validation_test, default_config)
 
+    def rados_striper(self, **kwargs):
+        self.log.debug("entering rados_striper method")
+        cmd_str = 'rados --striper 2>&1 || true'
+        output = self.master_remote.sh(cmd_str)
+        assert 'unrecognized command --striper' in output, \
+            "ceph is compiled without libradosstriper"
+        self.log.debug("leaving rados_striper method")
+
     def systemd_units_active(self, **kwargs):
         """
         For all cluster nodes, determine which systemd services

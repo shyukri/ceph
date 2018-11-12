@@ -1,0 +1,6 @@
+tasks:
+        - exec:
+                client.salt_master:
+                        - 'ceph -s'
+        - deepsea.validation:
+                rados_striper:
