@@ -1875,7 +1875,7 @@ class Validation(DeepSea):
 
     def rados_striper(self, **kwargs):
         self.log.debug("entering rados_striper method")
-        cmd_str = 'rados --striper 2>&1 || true'
+        cmd_str = 'sudo rados --striper 2>&1 || true'
         output = self.master_remote.sh(cmd_str)
         assert 'unrecognized command --striper' in output, \
             "ceph is compiled without libradosstriper"
