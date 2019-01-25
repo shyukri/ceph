@@ -1998,19 +1998,20 @@ std::vector<Option> get_global_options() {
 
     Option("auth_cluster_required", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("cephx")
-    .set_description(""),
+    .set_description("authentication methods required by the cluster"),
 
     Option("auth_service_required", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("cephx")
-    .set_description(""),
+    .set_description("authentication methods required by service daemons"),
 
     Option("auth_client_required", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("cephx, none")
-    .set_description(""),
+    .set_flag(Option::FLAG_MINIMAL_CONF)
+    .set_description("authentication methods allowed by clients"),
 
     Option("auth_supported", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")
-    .set_description(""),
+    .set_description("authentication methods required (deprecated)"),
 
     Option("max_rotating_auth_attempts", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(10)
@@ -3886,7 +3887,7 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("osd_objectstore", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("filestore")
+    .set_default("bluestore")
     .set_enum_allowed({"bluestore", "filestore", "memstore", "kstore"})
     .set_flag(Option::FLAG_CREATE)
     .set_description("backend type for an OSD (like filestore or bluestore)"),
@@ -4115,10 +4116,16 @@ std::vector<Option> get_global_options() {
     .set_default(1)
     .set_description("How frequently (in seconds) to balance free space between BlueFS and BlueStore"),
 
-    Option("bluestore_bluefs_balance_failure_dump_interval", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    Option("bluestore_bluefs_alloc_failure_dump_interval", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(0)
-    .set_description("How frequently (in seconds) to dump information on "
-      "allocation failure occurred during BlueFS space rebalance"),
+    .set_description("How frequently (in seconds) to dump allocator on"
+      "BlueFS space allocation failure"),
+
+    Option("bluestore_bluefs_db_compatibility", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(true)
+    .set_description("Sync db with legacy bluefs extents info")
+    .set_long_description("Enforces db sync with legacy bluefs extents information on close."
+                          " Enables downgrades to pre-nautilus releases"),
 
     Option("bluestore_spdk_mem", Option::TYPE_SIZE, Option::LEVEL_DEV)
     .set_default(512)
@@ -7833,12 +7840,17 @@ std::vector<Option> get_mds_client_options() {
 
     Option("client_mds_namespace", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")
+
     .set_description("CephFS file system name to mount")
     .set_long_description("Use this with ceph-fuse, or with any process "
         "that uses libcephfs.  Programs using libcephfs may also pass "
         "the filesystem name into mount(), which will override this setting. "
         "If no filesystem name is given in mount() or this setting, the default "
         "filesystem will be mounted (usually the first created)."),
+
+    Option("fake_statfs_for_testing", Option::TYPE_INT, Option::LEVEL_DEV)
+    .set_default(0)
+    .set_description("Set a value for kb and compute kb_used from total of num_bytes"),
   });
 }
 

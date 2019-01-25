@@ -40,17 +40,71 @@ class OrchestratorCli(orchestrator.OrchestratorClientMixin, MgrModule):
             "perm": "r"
         },
         {
-            'cmd': "orchestrator service add "
-                   "name=svc_type,type=CephString "
+            'cmd': "orchestrator osd add "
                    "name=svc_arg,type=CephString ",
-            "desc": "Create a service of any type",
+            "desc": "Create an OSD service",
             "perm": "rw"
         },
         {
-            'cmd': "orchestrator service rm "
-                   "name=svc_type,type=CephString "
+            'cmd': "orchestrator osd rm "
                    "name=svc_id,type=CephString ",
-            "desc": "Remove a service",
+            "desc": "Remove an OSD service",
+            "perm": "rw"
+        },
+        {
+            'cmd': "orchestrator mds add "
+                   "name=svc_arg,type=CephString ",
+            "desc": "Create an MDS service",
+            "perm": "rw"
+        },
+        {
+            'cmd': "orchestrator mds rm "
+                   "name=svc_id,type=CephString ",
+            "desc": "Remove an MDS service",
+            "perm": "rw"
+        },
+        {
+            'cmd': "orchestrator rgw add "
+                   "name=svc_arg,type=CephString ",
+            "desc": "Create an RGW service",
+            "perm": "rw"
+        },
+        {
+            'cmd': "orchestrator rgw rm "
+                   "name=svc_id,type=CephString ",
+            "desc": "Remove an RGW service",
+            "perm": "rw"
+        },
+        {
+            'cmd': "orchestrator nfs add "
+                   "name=svc_arg,type=CephString "
+                   "name=pool,type=CephString "
+                   "name=namespace,type=CephString,req=false ",
+            "desc": "Create an NFS service",
+            "perm": "rw"
+        },
+        {
+            'cmd': "orchestrator nfs rm "
+                   "name=svc_id,type=CephString ",
+            "desc": "Remove an NFS service",
+            "perm": "rw"
+        },
+        {
+            'cmd': "orchestrator service "
+                   "name=action,type=CephChoices,"
+                   "strings=start|stop|reload "
+                   "name=svc_type,type=CephString "
+                   "name=svc_name,type=CephString",
+            "desc": "Start, stop or reload an entire service (i.e. all daemons)",
+            "perm": "rw"
+        },
+        {
+            'cmd': "orchestrator service-instance "
+                   "name=action,type=CephChoices,"
+                   "strings=start|stop|reload "
+                   "name=svc_type,type=CephString "
+                   "name=svc_id,type=CephString",
+            "desc": "Start, stop or reload a specific service instance",
             "perm": "rw"
         },
         {
@@ -137,7 +191,7 @@ class OrchestratorCli(orchestrator.OrchestratorClientMixin, MgrModule):
         services = completion.result
 
         # Sort the list for display
-        services.sort(key=lambda s: (s.service_type, s.nodename, s.daemon_name))
+        services.sort(key=lambda s: (s.service_type, s.nodename, s.service_instance))
 
         if len(services) == 0:
             return HandleCommandResult(stdout="No services reported")
@@ -147,9 +201,14 @@ class OrchestratorCli(orchestrator.OrchestratorClientMixin, MgrModule):
         else:
             lines = []
             for s in services:
-                lines.append("{0}.{1} {2} {3} {4} {5}".format(
+                if s.service == None:
+                    service_id = s.service_instance
+                else:
+                    service_id = "{0}.{1}".format(s.service, s.service_instance)
+
+                lines.append("{0} {1} {2} {3} {4} {5}".format(
                     s.service_type,
-                    s.daemon_name,
+                    service_id,
                     s.nodename,
                     s.container_id,
                     s.version,
@@ -157,55 +216,89 @@ class OrchestratorCli(orchestrator.OrchestratorClientMixin, MgrModule):
 
             return HandleCommandResult(stdout="\n".join(lines))
 
-    def _service_add(self, cmd):
+    def _osd_add(self, cmd):
+        device_spec = cmd['svc_arg']
+        try:
+            node_name, block_device = device_spec.split(":")
+        except TypeError:
+            return HandleCommandResult(-errno.EINVAL,
+                                       stderr="Invalid device spec, should be <node>:<device>")
+
+        devs = orchestrator.DeviceSelection(paths=block_device)
+        spec = orchestrator.DriveGroupSpec(node_name, data_devices=devs)
+
+        # TODO: Remove this and make the orchestrator composable
+        host_completion = self.get_hosts()
+        self.wait([host_completion])
+        all_hosts = [h.name for h in host_completion.result]
+
+        completion = self.create_osds(spec, all_hosts)
+        self._orchestrator_wait([completion])
+
+        return HandleCommandResult()
+
+    def _add_stateless_svc(self, svc_type, spec):
+        completion = self.add_stateless_service(svc_type, spec)
+        self._orchestrator_wait([completion])
+        return HandleCommandResult()
+
+    def _mds_add(self, cmd):
+        spec = orchestrator.StatelessServiceSpec()
+        spec.name = cmd['svc_arg']
+        return self._add_stateless_svc("mds", spec)
+
+    def _rgw_add(self, cmd):
+        spec = orchestrator.StatelessServiceSpec()
+        spec.name = cmd['svc_arg']
+        return self._add_stateless_svc("rgw", spec)
+
+    def _nfs_add(self, cmd):
+        cluster_name = cmd['svc_arg']
+        pool = cmd['pool']
+        ns = cmd.get('namespace', None)
+
+        spec = orchestrator.StatelessServiceSpec()
+        spec.name = cluster_name
+        spec.extended = { "pool":pool }
+        if ns != None:
+            spec.extended["namespace"] = ns
+        return self._add_stateless_svc("nfs", spec)
+
+    def _rm_stateless_svc(self, svc_type, svc_id):
+        completion = self.remove_stateless_service(svc_type, svc_id)
+        self._orchestrator_wait([completion])
+        return HandleCommandResult()
+
+    def _osd_rm(self, cmd):
+        return self._rm_stateless_svc("osd", cmd['svc_id'])
+
+    def _mds_rm(self, cmd):
+        return self._rm_stateless_svc("mds", cmd['svc_id'])
+
+    def _rgw_rm(self, cmd):
+        return self._rm_stateless_svc("rgw", cmd['svc_id'])
+
+    def _nfs_rm(self, cmd):
+        return self._rm_stateless_svc("nfs", cmd['svc_id'])
+
+    def _service_action(self, cmd):
+        action = cmd['action']
         svc_type = cmd['svc_type']
-        if svc_type == "osd":
-            device_spec = cmd['svc_arg']
-            try:
-                node_name, block_device = device_spec.split(":")
-            except TypeError:
-                return HandleCommandResult(-errno.EINVAL,
-                                           stderr="Invalid device spec, should be <node>:<device>")
+        svc_name = cmd['svc_name']
 
-            spec = orchestrator.OsdCreationSpec()
-            spec.node = node_name
-            spec.format = "bluestore"
-            spec.drive_group = orchestrator.DriveGroupSpec([block_device])
+        completion = self.service_action(action, svc_type, service_name=svc_name)
+        self._orchestrator_wait([completion])
 
-            completion = self.create_osds(spec)
-            self._orchestrator_wait([completion])
+        return HandleCommandResult()
 
-            return HandleCommandResult()
-
-        elif svc_type == "mds":
-            fs_name = cmd['svc_arg']
-
-            spec = orchestrator.StatelessServiceSpec()
-            spec.name = fs_name
-
-            completion = self.add_stateless_service(svc_type, spec)
-            self._orchestrator_wait([completion])
-
-            return HandleCommandResult()
-        elif svc_type == "rgw":
-            store_name = cmd['svc_arg']
-
-            spec = orchestrator.StatelessServiceSpec()
-            spec.name = store_name
-
-            completion = self.add_stateless_service(svc_type, spec)
-            self._orchestrator_wait([completion])
-
-            return HandleCommandResult()
-        else:
-            raise NotImplementedError(svc_type)
-
-    def _service_rm(self, cmd):
+    def _service_instance_action(self, cmd):
+        action = cmd['action']
         svc_type = cmd['svc_type']
         svc_id = cmd['svc_id']
 
-        completion = self.remove_stateless_service(svc_type, svc_id)
+        completion = self.service_action(action, svc_type, service_id=svc_id)
         self._orchestrator_wait([completion])
+
         return HandleCommandResult()
 
     def _set_backend(self, cmd):
@@ -289,10 +382,26 @@ class OrchestratorCli(orchestrator.OrchestratorClientMixin, MgrModule):
             return self._list_services(cmd)
         elif cmd['prefix'] == "orchestrator service status":
             return self._list_services(cmd)  # TODO: create more detailed output
-        elif cmd['prefix'] == "orchestrator service add":
-            return self._service_add(cmd)
-        elif cmd['prefix'] == "orchestrator service rm":
-            return self._service_rm(cmd)
+        elif cmd['prefix'] == "orchestrator osd add":
+            return self._osd_add(cmd)
+        elif cmd['prefix'] == "orchestrator osd rm":
+            return self._osd_rm(cmd)
+        elif cmd['prefix'] == "orchestrator mds add":
+            return self._mds_add(cmd)
+        elif cmd['prefix'] == "orchestrator mds rm":
+            return self._mds_rm(cmd)
+        elif cmd['prefix'] == "orchestrator rgw add":
+            return self._rgw_add(cmd)
+        elif cmd['prefix'] == "orchestrator rgw rm":
+            return self._rgw_rm(cmd)
+        elif cmd['prefix'] == "orchestrator nfs add":
+            return self._nfs_add(cmd)
+        elif cmd['prefix'] == "orchestrator nfs rm":
+            return self._nfs_rm(cmd)
+        elif cmd['prefix'] == "orchestrator service":
+            return self._service_action(cmd)
+        elif cmd['prefix'] == "orchestrator service-instance":
+            return self._service_instance_action(cmd)
         elif cmd['prefix'] == "orchestrator set backend":
             return self._set_backend(cmd)
         elif cmd['prefix'] == "orchestrator status":
