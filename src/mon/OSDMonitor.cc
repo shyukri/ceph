@@ -10607,11 +10607,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 
         switch (option) {
         case OP_NOUP:
-          if (osdmap.is_up(osd)) {
-            ss << "osd." << osd << " is already up. ";
-            continue;
-          }
-
           if (osdmap.is_noup(osd)) {
             if (pending_inc.pending_osd_state_clear(osd, CEPH_OSD_NOUP))
               any = true;
@@ -10623,11 +10618,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
           break;
 
         case OP_NODOWN:
-          if (osdmap.is_down(osd)) {
-            ss << "osd." << osd << " is already down. ";
-            continue;
-          }
-
           if (osdmap.is_nodown(osd)) {
             if (pending_inc.pending_osd_state_clear(osd, CEPH_OSD_NODOWN))
               any = true;
@@ -10639,11 +10629,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
           break;
 
         case OP_NOIN:
-          if (osdmap.is_in(osd)) {
-            ss << "osd." << osd << " is already in. ";
-            continue;
-          }
-
           if (osdmap.is_noin(osd)) {
             if (pending_inc.pending_osd_state_clear(osd, CEPH_OSD_NOIN))
               any = true;
@@ -10655,11 +10640,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
           break;
 
         case OP_NOOUT:
-          if (osdmap.is_out(osd)) {
-            ss << "osd." << osd << " is already out. ";
-            continue;
-          }
-
           if (osdmap.is_noout(osd)) {
             if (pending_inc.pending_osd_state_clear(osd, CEPH_OSD_NOOUT))
               any = true;
