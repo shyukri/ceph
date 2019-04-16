@@ -33,19 +33,13 @@ if [ "$WITH_PYTHON2" = "ON" ]; then
     ENV_LIST+="py27-cov,py27-lint,"
   fi
 fi
-# WITH_PYTHON3 might be set to "ON" or to the python3 RPM version number
-# prevailing on the system - e.g. "3", "36"
-if [[ "$WITH_PYTHON3" =~ (^3|^ON) ]]; then
+if [ "$WITH_PYTHON3" = "3" ]; then
   if [[ -n "$@" ]]; then
     ENV_LIST+="py3-run,"
   else
     ENV_LIST+="py3-cov,py3-lint"
   fi
 fi
-# use bash string manipulation to strip off any trailing comma
-ENV_LIST=${ENV_LIST%,}
+ENV_LIST=$(echo "$ENV_LIST" | sed -e 's/,$//')
 
-tox -c "${TOX_PATH}" -e "${ENV_LIST}" "$@"
-TOX_STATUS="$?"
-test "$TOX_STATUS" -ne "0" && dump_envvars
-exit $TOX_STATUS
+tox -c "${TOX_PATH}" -e "$ENV_LIST" "$@" || dump_envvars
