@@ -41,13 +41,16 @@ test_others() {
     dd if=/bin/ls of=/tmp/img1 bs=1k seek=10000
     dd if=/bin/ln of=/tmp/img1 bs=1k seek=100000
 
-    # import, snapshot
+
+    # import, snapshot, diff
     rbd import $RBD_CREATE_ARGS /tmp/img1 testimg1
     rbd resize testimg1 --size=256 --allow-shrink
     rbd export testimg1 /tmp/img2
     rbd snap create testimg1 --snap=snap1
+    [[ -z "$(rbd diff testimg1)" ]] # no diff
     rbd resize testimg1 --size=128 && exit 1 || true   # shrink should fail
     rbd resize testimg1 --size=128 --allow-shrink
+    [[ -n "$(rbd diff testimg1)" ]] # has diff
     rbd export testimg1 /tmp/img3
 
     # info
@@ -102,8 +105,9 @@ test_others() {
     cmp /tmp/img2 /tmp/img-diff2.new
     cmp /tmp/img3 /tmp/img-diff3.new
 
-    # rollback
+    # rollback, diff
     rbd snap rollback --snap=snap1 testimg1
+    [[ -z "$(rbd diff testimg1)" ]] # no diff after rollback
     rbd snap rollback --snap=snap1 testimg-diff1
     rbd info testimg1 | grep 'size 256 MiB'
     rbd info testimg-diff1 | grep 'size 256 MiB'
