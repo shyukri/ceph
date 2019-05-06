@@ -9,10 +9,7 @@ groups:
           type: ceph_default
           oid: 1.3.6.1.4.1.50495.15.1.2.2.1
         annotations:
-          description: >
-            Ceph in HEALTH_ERROR state for more than 5 minutes.
-            Please check "ceph health detail" for more information.
-
+          description: Ceph in health_error state for more than 5m.
       - alert: health warn
         expr: ceph_health_status == 1
         for: 15m
@@ -34,16 +31,7 @@ groups:
           type: ceph_default
           oid: 1.3.6.1.4.1.50495.15.1.2.3.1
         annotations:
-          description: |
-            Monitor count in quorum is below three.
-
-            Only {{ $value }} of {{ with query "count(ceph_mon_quorum_status)" }}{{ . | first | value }}{{ end }} monitors are active.
-
-            The following monitors are down:
-            {{- range query "(ceph_mon_quorum_status == 0) + on(ceph_daemon) group_left(hostname) (ceph_mon_metadata * 0)" }}
-              - {{ .Labels.ceph_daemon }} on {{ .Labels.hostname }}
-            {{- end }}
-
+          description: Monitor count in quorum is low.
   - name: osd
     rules:
       - alert: 10% OSDs down
@@ -69,17 +57,7 @@ groups:
           type: ceph_default
           oid: 1.3.6.1.4.1.50495.15.1.2.4.2
         annotations:
-          description: |
-            {{ $s := "" }}{{ if gt $value 1.0 }}{{ $s = "s" }}{{ end }}
-            {{ $value }} OSD{{ $s }} down for more than 15 minutes.
-
-            {{ $value }} of {{ query "count(ceph_osd_up)" | first | value }} OSDs are down.
-
-            The following OSD{{ $s }} {{ if eq $s "" }}is{{ else }}are{{ end }} down:
-              {{- range query "(ceph_osd_up * on(ceph_daemon) group_left(hostname) ceph_osd_metadata) == 0"}}
-                - {{ .Labels.ceph_daemon }} on {{ .Labels.hostname }}
-              {{- end }}
-
+          description: One or more OSDs down for more than 15 minutes.
       - alert: OSDs near full
         expr: |
           (
