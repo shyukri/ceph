@@ -95,6 +95,8 @@ void usage()
   cout << "  object stat                stat an object for its metadata\n";
   cout << "  object unlink              unlink object from bucket index\n";
   cout << "  objects expire             run expired objects cleanup\n";
+  cout << "  objects expire-stale list  list stale expired objects (caused by reshard)\n";
+  cout << "  objects expire-stale rm    remove stale expired objects\n";
   cout << "  period delete              delete a period\n";
   cout << "  period get                 get period info\n";
   cout << "  period get-current         get current period info\n";
@@ -385,6 +387,8 @@ enum {
   OPT_OBJECT_STAT,
   OPT_OBJECT_REWRITE,
   OPT_OBJECTS_EXPIRE,
+  OPT_OBJECTS_EXPIRE_STALE_LIST,
+  OPT_OBJECTS_EXPIRE_STALE_RM,
   OPT_BI_GET,
   OPT_BI_PUT,
   OPT_BI_LIST,
@@ -515,6 +519,7 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
       strcmp(cmd, "data") == 0 ||
       strcmp(cmd, "datalog") == 0 ||
       strcmp(cmd, "error") == 0 ||
+      strcmp(cmd, "expire-stale") == 0 ||
       strcmp(cmd, "gc") == 0 ||
       strcmp(cmd, "global") == 0 ||
       strcmp(cmd, "key") == 0 ||
@@ -684,6 +689,12 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
   } else if (strcmp(prev_cmd, "objects") == 0) {
     if (strcmp(cmd, "expire") == 0)
       return OPT_OBJECTS_EXPIRE;
+  } else if ((prev_prev_cmd && strcmp(prev_prev_cmd, "objects") == 0) &&
+	     (strcmp(prev_cmd, "expire-stale") == 0)) {
+    if (strcmp(cmd, "list") == 0)
+      return OPT_OBJECTS_EXPIRE_STALE_LIST;
+    if (strcmp(cmd, "rm") == 0)
+      return OPT_OBJECTS_EXPIRE_STALE_RM;
   } else if (strcmp(prev_cmd, "olh") == 0) {
     if (strcmp(cmd, "get") == 0)
       return OPT_OLH_GET;
@@ -5818,6 +5829,22 @@ next:
     }
   }
 
+  if (opt_cmd == OPT_OBJECTS_EXPIRE_STALE_LIST) {
+    ret = RGWBucketAdminOp::fix_obj_expiry(store, bucket_op, f, true);
+    if (ret < 0) {
+      cerr << "ERROR: listing returned " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+  }
+
+  if (opt_cmd == OPT_OBJECTS_EXPIRE_STALE_RM) {
+    ret = RGWBucketAdminOp::fix_obj_expiry(store, bucket_op, f, false);
+    if (ret < 0) {
+      cerr << "ERROR: removing returned " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+  }
+
   if (opt_cmd == OPT_BUCKET_REWRITE) {
     if (bucket_name.empty()) {
       cerr << "ERROR: bucket not specified" << std::endl;
@@ -6164,6 +6191,8 @@ next:
         handled = dump_string("tag", bl, formatter);
       } else if (iter->first == RGW_ATTR_ETAG) {
         handled = dump_string("etag", bl, formatter);
+      } else if (iter->first == RGW_ATTR_DELETE_AT) {
+        handled = decode_dump<utime_t>("delete_at", bl, formatter);
       }
 
       if (!handled)
