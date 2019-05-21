@@ -132,7 +132,7 @@ class Validation(SESQA):
             if not isinstance(kwargs, dict):
                 raise ConfigError(self.err_prefix + "Method config must be a dict")
             self.log.info(
-                "Running MGR plugin test {} with config ->{}<-"
+                "Running test {} with config ->{}<-"
                 .format(method_spec, kwargs)
                 )
             method = getattr(self, method_spec, None)
@@ -141,6 +141,32 @@ class Validation(SESQA):
             else:
                 raise ConfigError(self.err_prefix + "No such method ->{}<-"
                                   .format(method_spec))
+
+    def drive_replace_initiate(self, **kwargs):
+        """
+        Initiate Deepsea drive replacement
+
+        Assumes there is 1 drive not being deployed (1node5disks - with DriveGroup `limit: 4`)
+
+        In order to "hide" an existing disk from the ceph.c_v in teuthology
+        the disk is formatted and mounted.
+        """
+        # :TODO: make this random and find correct disk device
+        osd_id = "2"
+        self.master_remote.sh("sudo ceph osd tree --format json > before.json")
+        self.master_remote.sh("sudo salt-run osd.replace {} 2>/dev/null".format(osd_id))
+        self.master_remote.sh("sudo mkfs.ext4 -F /dev/vdd; sudo mount /dev/vdd /mnt")
+        self.master_remote.sh("sudo salt-run disks.c_v_commands 2>/dev/null")
+        # Output is like: ceph-volume lvm batch --no-auto /dev/vdf --yes --osd-ids 2
+
+    def drive_replace_check(self, **kwargs):
+        """
+        Deepsea drive replacement after check
+
+        Replaced osd_id should be back in the osd tree once stage.3 is ran
+        """
+        self.master_remote.sh("sudo ceph osd tree --format json > after.json")
+        self.master_remote.sh("diff before.json after.json && echo 'Drive Replaced OK'")
 
 
 task = SESQA
