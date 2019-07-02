@@ -1074,6 +1074,17 @@ Group:          System/Monitoring
 This package provides Ceph’s default alerts for Prometheus.
 %endif
 
+%package dashboard-e2e
+Summary:       Standalone Ceph Dashboard End-To-End ("E2E") tests
+BuildArch:     noarch
+%if 0%{?suse_version}
+Group:         System/Filesystems
+%endif
+Requires:      ceph-common = %{_epoch_prefix}%{version}-%{release}
+%description dashboard-e2e
+This package provides the Ceph Dashboard End-To-End ("E2E") tests as a
+standalone RPM for use in Continuous Integration and ad hoc testing.
+
 #################################################################################
 # common
 #################################################################################
@@ -2238,6 +2249,8 @@ exit 0
 %config /etc/prometheus/SUSE/default_rules/ceph_default_alerts.yml
 %endif
 
+%files dashboard-e2e
+%{_datadir}/ceph/dashboard-e2e
 
 %changelog
 # nospeccleaner
