@@ -130,7 +130,7 @@ function initialization_sequence {
     _initialize_storage_profile
     _initialize_and_vet_nodes
     set -x
-    test $STORAGE_NODES -lt 4 && export DEV_ENV="true"
+    test $STORAGE_NODES -lt 4 && export DEV_ENV="true" || true
 }
 
 function pared_down_init_sequence {
