@@ -1,12 +1,18 @@
 #!/bin/bash
 #
-# DeepSea integration test "suites/basic/stage-5.sh"
+# DeepSea integration test "stage-5.sh"
 #
 # This script runs DeepSea stages 2 and 5 to remove a storage-only node from
 # an existing Ceph cluster.
 #
-# In addition to the assumptions contained in README, this script assumes
-# that:
+# The script makes several assumptions beyond those listed at
+#
+#     https://github.com/smithfarm/health-ok/blob/master/README.rst
+#
+# (it's a good idea to read that before trying to use this script)
+#
+# In addition to those assumptions, this script assumes that:
+#
 # 1. DeepSea has already been used to deploy a cluster,
 # 2. the cluster has at least one "storage-only" node (i.e. a node with role
 #    "storage" and no other roles (except possibly "admin")), and

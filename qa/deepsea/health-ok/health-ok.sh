@@ -6,7 +6,11 @@
 # a Ceph cluster (with various options to control the cluster configuration).
 # After the last stage completes, the script checks for HEALTH_OK.
 #
-# The script makes no assumptions beyond those listed in README.
+# The script makes no assumptions beyond those listed at
+#
+#     https://github.com/smithfarm/health-ok/blob/master/README.rst
+#
+# (it's a good idea to read that before trying to use this script)
 #
 # After HEALTH_OK is reached, the script also runs various sanity tests
 # depending on the options provided.
