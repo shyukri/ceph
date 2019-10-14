@@ -418,7 +418,7 @@ class DeepSea(Task):
     def _purge_osds(self):
         # needed as long as teuthology install task purges /var/lib/ceph
         # in its teardown phase
-        for _remote in self.ctx.cluster.remotes.iterkeys():
+        for _remote in self.ctx.cluster.remotes.keys():
             self.log.info("stopping OSD services on {}"
                           .format(_remote.hostname))
             _remote.run(args=[
@@ -621,7 +621,7 @@ class CephConf(DeepSea):
             return "{}/{}".format(ceph_conf_d, self.customize[section])
 
     def __custom_ceph_conf(self, section, customizations):
-        for conf_item, conf_value in customizations.iteritems():
+        for conf_item, conf_value in customizations.items():
             data = '{} = {}\n'.format(conf_item, conf_value)
             sudo_append_to_file(
                 self.master_remote,
@@ -1738,7 +1738,7 @@ class Validation(DeepSea):
 
     def begin(self):
         self.log.debug("Processing tests: ->{}<-".format(self.config.keys()))
-        for method_spec, kwargs in self.config.iteritems():
+        for method_spec, kwargs in self.config.items():
             kwargs = {} if not kwargs else kwargs
             if not isinstance(kwargs, dict):
                 raise ConfigError(self.err_prefix + "Method config must be a dict")
