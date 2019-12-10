@@ -4,7 +4,9 @@ Task (and subtasks) for automating deployment of Ceph using DeepSea
 Linter:
     flake8 --max-line-length=100
 """
+import json
 import logging
+import time
 import yaml
 
 from salt_manager import SaltManager
@@ -36,6 +38,11 @@ def anchored(log_message):
     global deepsea_ctx
     assert 'log_anchor' in deepsea_ctx, "deepsea_ctx not populated"
     return "{}{}".format(deepsea_ctx['log_anchor'], log_message)
+
+
+def ceph_health_test(master_remote):
+    cmd = 'sudo salt-call wait.until status=HEALTH_OK timeout=900 check=1 2> /dev/null'
+    master_remote.run(args=cmd)
 
 
 def dump_file_that_might_not_exist(remote, fpath):
@@ -139,6 +146,7 @@ class DeepSea(Task):
                         '--no-gpg-checks',
                         'remove',
                         'deepsea',
+                        'deepsea-cli',
                         'deepsea-qa',
                         run.Raw('||'),
                         'true'
@@ -450,10 +458,13 @@ class DeepSea(Task):
         os_version = float(self.ctx.config.get('os_version', 0))
         return (os_type, os_version)
 
-    def reboot_a_single_machine_now(self, remote, log_spec=None):
+    def reboot_a_single_machine_now(self, remote, log_spec=None, tries=None):
         global reboot_tries
+        if tries is None:
+            tries = reboot_tries
         if not log_spec:
-            log_spec = "node {} reboot now".format(remote.hostname)
+            log_spec = ("node {} reboot now, trying up to {} times"
+                        .format(remote.hostname, tries))
         cmd_str = "sudo reboot"
         remote_exec(
             remote,
@@ -462,13 +473,16 @@ class DeepSea(Task):
             log_spec,
             rerun=False,
             quiet=True,
-            tries=reboot_tries,
+            tries=tries,
             )
+        self.log.info(anchored("node {} back from reboot".format(remote.hostname)))
 
-    def reboot_the_cluster_now(self, log_spec=None):
+    def reboot_the_cluster_now(self, log_spec=None, tries=None):
         global reboot_tries
+        if tries is None:
+            tries = reboot_tries
         if not log_spec:
-            log_spec = "all nodes reboot now"
+            log_spec = "all nodes reboot now, trying up to {} times"
         cmd_str = "salt \\* cmd.run reboot"
         if self.quiet_salt:
             cmd_str += " 2> /dev/null"
@@ -479,9 +493,10 @@ class DeepSea(Task):
             log_spec,
             rerun=False,
             quiet=True,
-            tries=reboot_tries,
+            tries=tries,
             )
         self.sm.ping_minions()
+        self.log.info(anchored("all cluster nodes back from reboot"))
 
     def role_type_present(self, role_type):
         """
@@ -862,6 +877,79 @@ class HealthOK(DeepSea):
         pass
 
 
+class InstallMigrationRPM(DeepSea):
+
+    err_prefix = "(install_migration_rpm subtask) "
+    rpm_name = "SLES15-SES-Migration"
+    rpm_location = None
+
+    def __init__(self, ctx, config):
+        global deepsea_ctx
+        deepsea_ctx['logger_obj'] = log.getChild('install_migration_rpm')
+        self.name = 'deepsea.install_migration_rpm'
+        super(InstallMigrationRPM, self).__init__(ctx, config)
+        if not isinstance(self.config, dict):
+            raise ConfigError(self.err_prefix + "config must be a dictionary")
+
+    def _install_lynx_on_teuthology_server(self):
+        misc.sh("sudo apt-get -y update && sudo apt-get --yes install lynx")
+        misc.sh("type lynx")
+
+    def _migration_rpm_url(self, rpm_name, rpm_location):
+        """Given the location and name of the migration RPM, determine the URL"""
+        cmd = ("lynx --dump -listonly {url} ".format(url=self.rpm_location) +
+               "| awk '{print $2}' " +
+               "| grep {name}.*.rpm$ ".format(name=self.rpm_name) +
+               "| uniq"
+               )
+        retval = misc.sh(cmd).rstrip()
+        if not retval:
+            raise ConfigError(
+                self.err_prefix + "command ->{}<- produced no output".format(cmd)
+                )
+        return retval
+
+    def begin(self):
+        if not self.config:
+            self.log.warning("empty config: nothing to do")
+            return None
+        config_keys = len(self.config)
+        if config_keys == 2:
+            self.rpm_name = str(self.config.get("rpm", ''))
+            self.rpm_location = str(self.config.get("url", ''))
+            self._install_lynx_on_teuthology_server()
+            self.log.info(anchored("installing migration RPM {} from \
+                                   location {} on all nodes" .format\
+                                   (self.rpm_name, self.rpm_location)))
+            self.scripts.run(
+                self.ctx.cluster,
+                'install_migration_rpm.sh',
+                args=[self.rpm_name, self._migration_rpm_url()],)
+        elif config_keys == 1:
+            self.log.info(anchored("installing migration RPM {}".format(self.rpm_name)))
+            self.rpm_name = self.config.values()[0]
+            self.scripts.run(
+                self.ctx.cluster,
+                'install_migration_rpm.sh',
+                args=[self.rpm_name],
+                )
+        else:
+            raise ConfigError(
+                self.err_prefix +
+                "You provided wrong config. Keys should be:"
+                "- rpm: 'name_of_rpm'"
+                "or optionally if you get the rpm from remote repo add"
+                "- url: URL_of_repo_of_rpm"
+                )
+
+
+    def end(self):
+        pass
+
+    def teardown(self):
+        pass
+
+
 class Orch(DeepSea):
 
     all_stages = [
@@ -904,10 +992,7 @@ class Orch(DeepSea):
         self.log.debug("munged config is {}".format(self.config))
 
     def __ceph_health_test(self):
-        cmd = 'sudo salt-call wait.until status=HEALTH_OK timeout=900 check=1'
-        if self.quiet_salt:
-            cmd += ' 2> /dev/null'
-        self.master_remote.run(args=cmd)
+        ceph_health_test(self.master_remote)
 
     def __check_salt_api_service(self):
         base_cmd = 'sudo systemctl status --full --lines={} {}.service'
@@ -1086,6 +1171,16 @@ class Orch(DeepSea):
         self.log.info("Not allowing reboots for this orchestration")
         return False
 
+    def __dump_lvm_status(self):
+        self.log.info("Dumping LVM status on storage nodes ->{}<-"
+                      .format(self.nodes_storage))
+        for hostname in self.nodes_storage:
+            remote = self.remotes[hostname]
+            self.scripts.run(
+                remote,
+                'lvm_status.sh',
+                )
+
     def _run_stage_0(self):
         """
         Run Stage 0
@@ -1128,7 +1223,19 @@ class Orch(DeepSea):
             'cat /etc/ceph/ceph.conf',
             abort_on_fail=False
             )
-        self.__lsblk_and_ceph_disk_list()
+        os_version = self.scripts.run(self.master_remote, 'os_version.sh')
+        os_major_version = os_version.split('.')[0]
+        if os_major_version == "12":
+            # ordinary SES5 (non-upgrade) test
+            self.__lsblk_and_ceph_disk_list()
+        elif os_major_version == "15":
+            # re-running stages after cluster upgraded to SES6
+            self.__dump_lvm_status()
+        else:
+            raise ConfigError(
+                self.err_prefix +
+                'detected unsupported OS version ->{}<- on Salt Master node'.format(os_version)
+                )
         self.scripts.run(
             self.master_remote,
             'ceph_cluster_status.sh',
@@ -1140,14 +1247,26 @@ class Orch(DeepSea):
         Run Stage 4
         """
         stage = 4
-        if self.role_type_present("ganesha"):
-            self._nfs_ganesha_no_root_squash()
-        igw_host = self.role_type_present("igw")
-        if igw_host:
-            igw_remote = self.remotes[igw_host]
-            self.scripts.run(
-                igw_remote,
-                'enable_targetcli_debug_logging.sh',
+        os_version = self.scripts.run(self.master_remote, 'os_version.sh')
+        os_major_version = os_version.split('.')[0]
+        if os_major_version == "12":
+            # ordinary SES5 (non-upgrade) test
+            if self.role_type_present("ganesha"):
+                self._nfs_ganesha_no_root_squash()
+            igw_host = self.role_type_present("igw")
+            if igw_host:
+                igw_remote = self.remotes[igw_host]
+                self.scripts.run(
+                    igw_remote,
+                    'enable_targetcli_debug_logging.sh',
+                    )
+        elif os_major_version == "15":
+            # re-running stages after cluster upgraded to SES6
+            pass
+        else:
+            raise ConfigError(
+                self.err_prefix +
+                'detected unsupported OS version ->{}<- on Salt Master node'.format(os_version)
                 )
         self.__log_stage_start(stage)
         self._run_orch(("stage", stage))
@@ -1350,6 +1469,16 @@ class Policy(DeepSea):
         cmd_str = "ls -l {}/policy.cfg".format(proposals_dir)
         self.master_remote.run(args=cmd_str)
 
+    def post_upgrade_policy(self):
+        """
+        Make the necessary changes to policy.cfg so it's compatible with ses6
+        """
+        for hostname in self.nodes_storage:
+            self.master_remote.sh("sudo bash -c 'echo role-storage/cluster/{}.sls >> {}/policy.cfg'".format(hostname, proposals_dir))
+        self.master_remote.sh("sudo bash -c 'sed -i '/profile/d' {}/policy.cfg'".format(proposals_dir))
+        self.master_remote.sh("sudo bash -c 'sed -i '/openattic/d' {}/policy.cfg'".format(proposals_dir))
+        self._cat_policy_cfg()
+
     def begin(self):
         """
         Generate policy.cfg from the results of role introspection
@@ -1368,6 +1497,8 @@ class Policy(DeepSea):
                         'proposals_remove_storage_only_node.sh',
                         args=[proposals_dir, delete_me, self.storage_profile],
                         )
+                elif k == 'post_upgrade_policy':
+                    self.post_upgrade_policy()
                 else:
                     raise ConfigError(self.err_prefix + "unrecognized "
                                       "munge_profile directive {}".format(k))
@@ -1410,6 +1541,18 @@ class Reboot(DeepSea):
     tasks:
     - deepsea.reboot:
           all:
+
+    By default, teuthology polls (via SSH) for the machine to come back from
+    reboot a maximum of 15 times, once per minute. In some cases, this might
+    not be enough. In such a case, use the "tries" parameter:
+
+    tasks:
+    - deepsea.reboot:
+          foo.1:
+              tries: 60
+
+    This would poll for the machine to come back one per minute for up to 60
+    minutes.
     """
 
     err_prefix = '(reboot subtask) '
@@ -1421,27 +1564,48 @@ class Reboot(DeepSea):
         super(Reboot, self).__init__(ctx, config)
 
     def begin(self):
+        global reboot_tries
         if not self.config:
             self.log.warning("empty config: nothing to do")
             return None
+        self.log.info("Considering config dict ->{}<-".format(self.config))
         config_keys = len(self.config)
         if config_keys > 1:
             raise ConfigError(
                 self.err_prefix +
                 "config dictionary may contain only one key. "
-                "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
+                "You provided ->{}<- keys".format(config_keys)
                 )
-        role_spec, repositories = self.config.items()[0]
+        role_spec, paramdict = self.config.items()[0]
+        paramdict_keys = len(paramdict)
+        if paramdict_keys >= 1:
+            self.log.info("Considering parameter dict {}".format(paramdict))
+            if paramdict_keys > 1:
+                raise ConfigError(
+                    self.err_prefix +
+                    "parameter dict may contain only one key. "
+                    "You provided ->{}<- keys".format(paramdict_keys)
+                    )
+            tries, tries_num = paramdict.items()[0]
+            if tries != 'tries':
+                raise ConfigError(
+                    self.err_prefix +
+                    "The parameter dict only supports one key: \"tries\""
+                    "But you provided an unknown key ->{}<-".format(tries)
+                    )
+            tries_num = int(tries_num)
+        else:
+            tries_num = reboot_tries
         if role_spec == "all":
             remote = self.ctx.cluster
             log_spec = "all nodes reboot now"
             self.log.warning(anchored(log_spec))
-            self.reboot_the_cluster_now(log_spec=log_spec)
+            self.reboot_the_cluster_now(log_spec=log_spec, tries=tries_num)
         else:
             remote = get_remote_for_role(self.ctx, role_spec)
             log_spec = "node {} reboot now".format(remote.hostname)
             self.log.warning(anchored(log_spec))
-            self.reboot_a_single_machine_now(remote, log_spec=log_spec)
+            self.reboot_a_single_machine_now(remote, log_spec=log_spec, tries=tries_num)
 
     def end(self):
         pass
@@ -1507,7 +1671,17 @@ class Repository(DeepSea):
     def _repositories_to_remote(self, remote):
         args = []
         for repo in self.repositories:
-            args += [repo['name'] + ':' + repo['url']]
+            if 'priority' in repo:
+                args += [str('\'') +
+                         str(repo['name']) +
+                         str('!') +
+                         str(repo['priority']) +
+                         str(':') +
+                         str(repo['url']) +
+                         str('\'')
+                         ]
+            else:
+                args += [repo['name'] + ':' + repo['url']]
         self.scripts.run(
             remote,
             'clobber_repositories.sh',
@@ -1518,6 +1692,7 @@ class Repository(DeepSea):
         if not self.config:
             self.log.warning("empty config: nothing to do")
             return None
+        self.log.info("Considering config dict ->{}<-".format(self.config))
         config_keys = len(self.config)
         if config_keys > 1:
             raise ConfigError(
@@ -1526,6 +1701,7 @@ class Repository(DeepSea):
                 "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
                 )
         role_spec, repositories = self.config.items()[0]
+        self.log.info("Current role is {} and repositories are {}".format(role_spec, repositories))
         if role_spec == "all":
             remote = self.ctx.cluster
         else:
@@ -1585,6 +1761,7 @@ class Script(DeepSea):
         if not self.config:
             self.log.warning("empty config: nothing to do")
             return None
+        self.log.info("Considering config dict {}".format(self.config))
         config_keys = len(self.config)
         if config_keys > 1:
             raise ConfigError(
@@ -1621,6 +1798,229 @@ class Script(DeepSea):
             script_spec,
             args=args
             )
+
+    def end(self):
+        pass
+
+    def teardown(self):
+        pass
+
+
+class Toolbox(DeepSea):
+    """
+    A class that contains various miscellaneous routines. For example:
+
+    tasks:
+    - deepsea.toolbox:
+          foo:
+
+    Runs the "foo" tool without any options.
+    """
+
+    err_prefix = '(toolbox subtask) '
+
+    def __init__(self, ctx, config):
+        global deepsea_ctx
+        deepsea_ctx['logger_obj'] = log.getChild('toolbox')
+        self.name = 'deepsea.toolbox'
+        super(Toolbox, self).__init__(ctx, config)
+
+    def _noout(self, add_or_rm, teuth_role):
+        """
+        add_or_rm is either 'add' or 'rm'
+        teuth_role is an 'osd' role uniquely specifying one of the storage nodes.
+        Enumerates the OSDs on the node and does 'add-noout' on each of them.
+        """
+        remote = get_remote_for_role(self.ctx, teuth_role)
+        hostname = remote.hostname
+        """
+        Check if the host is teuthology-openstack or libcloud and trim it accordingly
+        """
+        if 'teuthology' in hostname:
+            self.log.info("Running {}-noout for OSDs on {}".format(add_or_rm, hostname))
+            cmd = ("sudo ceph osd tree -f json | "
+                   "jq -c '[.nodes[] | select(.name == \"{}\")][0].children'"
+                    .format(hostname.rstrip(".teuthology")))
+        else:
+            self.log.info("Running {}-noout for OSDs on {}".format(add_or_rm, hostname))
+            cmd = ("sudo ceph osd tree -f json | "
+                   "jq -c '[.nodes[] | select(.name == \"{}\")][0].children'"
+                    .format(hostname.rstrip(".ecp.suse.de")))
+        osds = json.loads(remote.sh(cmd))
+        self.log.info("Running {}-noout for OSDs ->{}<-".format(add_or_rm, osds))
+        for osd in osds:
+            remote.sh("sudo ceph osd {}-noout osd.{}".format(add_or_rm, osd))
+
+    def add_noout(self, **kwargs):
+        """
+        Expects one key - a teuthology 'osd' role specifying one of the storage nodes.
+        Enumerates the OSDs on this node and does 'add-noout' on each of them.
+        """
+        role = kwargs.keys()[0]
+        self._noout("add", role)
+
+    def ceph_health_test(self, **kwargs):
+        ceph_health_test(self.master_remote)
+
+    def post_upgrade_status_checks(self, **kwargs):
+        """
+        Takes a config dict with a single key containing a teuthology role,
+        which we use to get the remote object of the node that was just upgraded.
+        """
+        if not kwargs:
+            self.log.warning("post_upgrade_status_checks got empty config: nothing to do")
+            return None
+        self.log.info("post_upgrade_status_checks: Considering config dict ->{}<-".format(kwargs))
+        config_keys = len(kwargs)
+        if config_keys > 1:
+            raise ConfigError(
+                self.err_prefix +
+                "post_upgrade_status_checks config dictionary may contain only one key. "
+                "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
+                )
+        role_spec, throwaway = kwargs.items()[0]
+        remote = get_remote_for_role(self.ctx, role_spec)
+        self.log.info("Teuthology role {} is {}".format(role_spec, remote.hostname))
+        remote.sh('cat /etc/os-release')
+        etc_issue = remote.sh('cat /etc/issue')
+        if "Migration has failed" in etc_issue:
+            self.log.error("Migration of node {} failed: here comes the log!"
+                           .format(remote.hostname))
+            remote.sh('cat /var/log/distro_migration.log')
+            raise RuntimeError("Migration of node {} failed".format(remote.hostname))
+        remote.sh('zypper packages --orphaned')
+
+    def cephfs_sanity_test(self, **kwargs):
+        """
+        The funtion expects 'client' teuthology role to be present.
+        Then it mounts cephfs volume using a random mon as mount point and checks
+        if the file that was created by nfs-ganesha smoke-test is there 
+        """
+        self.log.info(anchored("Running Cephfs sanity test"))
+        secret = self.master_remote.sh("sudo grep 'key =' /etc/ceph/ceph.client.admin.keyring ").split()[2]
+        remote = get_remote_for_role(self.ctx, "client.0")
+        testmon = self.role_type_present("mon")
+        remote.sh("sudo test -d /mnt")
+        remote.sh("sudo mount -t ceph {}:/ /mnt -o name=admin,secret={}".format(testmon, secret))
+        remote.sh("sudo test -f /mnt/bubba")
+        remote.sh("sudo bash -c 'echo cephfs sanity test > /mnt/testfile'")
+        remote.sh("sudo test -f /mnt/testfile")
+        remote.sh("sudo umount /mnt")
+        self.log.info("Cephfs sanity test result : OK")
+
+    def ganesha_sanity_test(self):
+        """
+        Connect to nfs-ganesha mode and create and then remove a file
+        mounts with options nfs nfs3 and nfs4 
+        """
+        nfs_v = ["", "nfsvers=3" , "nfsvers=4"]
+        self.log.info(anchored("Running NFS sanity test"))
+        remote = get_remote_for_role(self.ctx, "client.0")
+        ganesha = self.role_type_present("ganesha")
+        remote.sh("sudo zypper --non-interactive --no-gpg-checks install --force --no-recommends nfs-client")
+        remote.sh("sudo test '!' -e /root/mnt")
+        remote.sh("sudo mkdir /root/mnt")
+        for version in nfs_v:
+            self.log.info("Testing nfs ganesha for version {}".format(version))
+            remote.sh("sudo test -d /root/mnt")
+            remote.sh("sudo mount -t nfs -o sync,{} {}:/ /root/mnt".format(version, ganesha))
+            remote.sh("sudo ls -lR /root/mnt")
+            if version == "nfsvers=3":
+                remote.sh("sudo test -f /root/mnt/bubba")
+                remote.sh("sudo touch /root/mnt/saturn")
+                remote.sh("sudo test -f /root/mnt/saturn")
+                remote.sh("sudo rm -f /root/mnt/saturn")
+            else:
+                remote.sh("sudo test -f /root/mnt/cephfs/bubba")
+                remote.sh("sudo touch /root/mnt/cephfs/saturn")
+                remote.sh("sudo test -f /root/mnt/cephfs/saturn")
+                remote.sh("sudo rm -f /root/mnt/cephfs/saturn")
+            remote.sh("sudo umount /root/mnt")
+        remote.sh("sudo rm -rf /root/mnt")
+        self.log.info("nfs-ganesha sanity test result : OK")
+
+    def remove_openattic(self, **kwargs):
+        self.log.info("Removing openattic service")
+        oa_host = self.role_type_present("openattic")
+        if oa_host:
+            remote = self.remotes[oa_host]
+            self.master_remote.sh("sudo salt {} state.apply ceph.rescind.openattic".format(remote.hostname))
+            self.master_remote.sh("sudo salt {} state.apply ceph.remove.openattic".format(remote.hostname))
+
+    def rm_noout(self, **kwargs):
+        """
+        Expects one key - a teuthology 'osd' role specifying one of the storage nodes.
+        Enumerates the OSDs on this node and does 'rm-noout' on each of them.
+        """
+        role = kwargs.keys()[0]
+        self._noout("rm", role)
+
+    def wait_for_health_ok(self, **kwargs):
+        """
+        Wait for HEALTH_OK - stop after HEALTH_OK is reached or timeout expires.
+        Timeout defaults to 120 minutes, but can be specified by providing a
+        configuration option. For example:
+
+        tasks:
+        - deepsea.toolbox
+            wait_for_health_ok:
+              timeout_minutes: 90
+        """
+        if kwargs:
+            self.log.info("wait_for_health_ok: Considering config dict ->{}<-".format(kwargs))
+            config_keys = len(kwargs)
+            if config_keys > 1:
+                raise ConfigError(
+                    self.err_prefix +
+                    "wait_for_health_ok config dictionary may contain only one key. "
+                    "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
+                    )
+            timeout_spec, timeout_minutes = kwargs.items()[0]
+        else:
+            timeout_minutes = 120
+        self.log.info("Waiting up to ->{}<- minutes for HEALTH_OK".format(timeout_minutes))
+        remote = get_remote_for_role(self.ctx, "client.salt_master")
+        cluster_status = ""
+        for minute in range(1, timeout_minutes+1):
+            remote.sh("sudo ceph status")
+            cluster_status = remote.sh(
+                "sudo ceph health detail --format json | jq -r '.status'"
+                ).rstrip()
+            if cluster_status == "HEALTH_OK":
+                break
+            self.log.info("Waiting for one minute for cluster to reach HEALTH_OK"
+                          "({} minutes left to timeout)"
+                          .format(timeout_minutes + 1 - minute))
+            time.sleep(60)
+        if cluster_status == "HEALTH_OK":
+            self.log.info(anchored("Cluster is healthy"))
+        else:
+            raise RuntimeError("Cluster still not healthy (current status ->{}<-) "
+                               "after reaching timeout"
+                               .format(cluster_status))
+
+    def begin(self):
+        if not self.config:
+            self.log.warning("empty config: nothing to do")
+            return None
+        self.log.info("Considering config dict ->{}<-".format(self.config))
+        config_keys = len(self.config)
+        if config_keys > 1:
+            raise ConfigError(
+                self.err_prefix +
+                "config dictionary may contain only one key. "
+                "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
+                )
+        tool_spec, kwargs = self.config.items()[0]
+        kwargs = {} if not kwargs else kwargs
+        method = getattr(self, tool_spec, None)
+        if method:
+            self.log.info("About to run tool ->{}<- from toolbox with config ->{}<-"
+                          .format(tool_spec, kwargs))
+            method(**kwargs)
+        else:
+            raise ConfigError(self.err_prefix + "No such tool ->{}<- in toolbox"
+                              .format(tool_spec))
 
     def end(self):
         pass
@@ -1680,12 +2080,21 @@ class Validation(DeepSea):
 
     def iscsi_smoke_test(self, **kwargs):
         igw_host = self.role_type_present("igw")
-        if igw_host:
-            remote = self.remotes[igw_host]
-            self.scripts.run(
-                remote,
-                'iscsi_smoke_test.sh',
-                )
+        if not kwargs:
+            if igw_host:
+                remote = self.remotes[igw_host]
+                self.scripts.run(
+                    remote,
+                    'iscsi_smoke_test.sh',
+                    )
+        else:
+            if igw_host:
+                remote = self.remotes[igw_host]
+                self.scripts.run(
+                    remote,
+                    'iscsi_smoke_test.sh',
+                    args=[kwargs.keys()[0]]
+                    )
 
     def openattic_smoke_test(self, **kwargs):
         oa_host = self.role_type_present("openattic")
@@ -1773,9 +2182,11 @@ ceph_conf = CephConf
 create_pools = CreatePools
 dummy = Dummy
 health_ok = HealthOK
+install_migration_rpm = InstallMigrationRPM
 orch = Orch
 policy = Policy
 reboot = Reboot
 repository = Repository
 script = Script
+toolbox = Toolbox
 validation = Validation

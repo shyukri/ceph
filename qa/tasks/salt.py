@@ -188,8 +188,8 @@ class Salt(Task):
             rem.run(args=[
                 'sudo',
                 'sed', '--in-place', '--regexp-extended',
-                '-e', 's/^\s*#\s*log_level:.*$/log_level: debug/g',
-                '-e', '/^\s*#.*$/d', '-e', '/^\s*$/d',
+                '-e', 's/^\s*#\s*log_level:.*$/log_level: debug/g',  # noqa: W605
+                '-e', '/^\s*#.*$/d', '-e', '/^\s*$/d',               # noqa: W605
                 '/etc/salt/master',
                 '/etc/salt/minion',
             ])
@@ -223,6 +223,7 @@ class Salt(Task):
         self.sm.gather_logs('salt')
         self.sm.gather_logs('zypp')
         self.sm.gather_logfile('zypper.log')
+        self.sm.gather_logfile('distro_migration.log')
         log.debug("end of end method")
 
     def teardown(self):
