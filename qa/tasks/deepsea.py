@@ -177,6 +177,7 @@ class DeepSea(Task):
         self.remotes = self.ctx['remotes']
         self.reinstall_deepsea = deepsea_ctx.get('reinstall_deepsea', False)
         self.repositories = deepsea_ctx['repositories']
+        self.patch_repositories = deepsea_ctx['patch']
         self.rgw_ssl = deepsea_ctx['rgw_ssl']
         self.roles = self.ctx['roles']
         self.role_types = self.ctx['role_types']
@@ -401,6 +402,7 @@ class DeepSea(Task):
         deepsea_ctx['master_remote'] = (
                 deepsea_ctx['salt_manager_instance'].master_remote
                 )
+        deepsea_ctx['patch'] = self.config.get("patch", None)
         deepsea_ctx['repositories'] = self.config.get("repositories", None)
         deepsea_ctx['rgw_ssl'] = self.config.get('rgw_ssl', False)
         deepsea_ctx['validation_tests_already_run'] = []
@@ -1586,6 +1588,8 @@ class Reboot(DeepSea):
                 "You provided ->{}<- keys".format(config_keys)
                 )
         role_spec, paramdict = self.config.items()[0]
+        if not isinstance(paramdict, dict):
+            paramdict = {'tries': reboot_tries}
         paramdict_keys = len(paramdict)
         if paramdict_keys >= 1:
             self.log.info("Considering parameter dict {}".format(paramdict))
@@ -1697,6 +1701,35 @@ class Repository(DeepSea):
             args=args
             )
 
+    def _patch(self, **kwargs):
+        """Perform zypper patch with maintenance test repos from 'deepsea:patch' section
+
+        It will target all nodes in the cluster.
+
+        Repository format provided via deepsea-overrides.yaml in teuthology-suite.
+
+        deepsea:
+            patch:
+              - url: http://<server>/artifacts/ci/XYZ/SUSE_Updates_Storage_5_x86_64
+                name: SUSE_Maintenance_13609
+                prio: 1
+        """
+        if self.patch_repositories:
+            for repo in self.patch_repositories:
+                cmd = (
+                    "zypper -n addrepo --refresh --no-gpgcheck {url} {name} && "
+                    "zypper -n --no-gpg-checks refresh && "
+                    "zypper list-patches --with-optional --repo {name} && "
+                    "zypper -n patch -l -y --details --with-optional --repo {name} && "
+                    "zypper ps -s"
+                    .format(url=repo['url'], name=repo['name'])
+                )
+                self.ctx.cluster.run(args=[
+                    'sudo', 'sh', '-c', cmd
+                ])
+        else:
+            self.log.warning("No patch repositories found.")
+
     def begin(self):
         if not self.config:
             self.log.warning("empty config: nothing to do")
@@ -1711,6 +1744,10 @@ class Repository(DeepSea):
                 )
         role_spec, repositories = self.config.items()[0]
         self.log.info("Current role is {} and repositories are {}".format(role_spec, repositories))
+        if role_spec == "patch":
+            self.log.info("Maintenance Update scenario starting...")
+            self._patch()
+            return
         if role_spec == "all":
             remote = self.ctx.cluster
         else:
