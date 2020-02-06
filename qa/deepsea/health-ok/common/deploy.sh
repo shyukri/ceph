@@ -214,12 +214,6 @@ function deploy_ceph {
     fi
     if [ "$START_STAGE" -le "4" ] ; then
         run_stage_4 "$CLI"
-        if [ -n "$NFS_GANESHA" ] ; then
-            nfs_ganesha_cat_config_file
-            nfs_ganesha_debug_log
-            echo "WWWW"
-            echo "NFS-Ganesha set to debug logging"
-        fi
         ceph_cluster_status
         _zypper_ps
         echo "Stage 4 OK: $DEPLOY_PHASE_COMPLETE_MESSAGE"

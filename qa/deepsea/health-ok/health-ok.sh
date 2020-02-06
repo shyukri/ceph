@@ -180,6 +180,10 @@ if [ -n "$RGW" ] ; then
 fi
 test -n "$MDS" -a "$CLIENT_NODES" -ge 1 && cephfs_mount_and_sanity_test
 if [ "$NFS_GANESHA" ] ; then
+    nfs_ganesha_cat_config_file
+    nfs_ganesha_debug_log
+    echo "WWWW"
+    echo "NFS-Ganesha set to debug logging"
     for v in "" "3" "4" ; do
         echo "Testing NFS-Ganesha with NFS version ->$v<-"
         if [ "$RGW" -a "$v" = "3" ] ; then
