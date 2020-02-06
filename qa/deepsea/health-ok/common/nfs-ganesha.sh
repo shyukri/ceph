@@ -27,7 +27,8 @@ function nfs_ganesha_debug_log {
 set -ex
 trap 'echo "Result: NOT_OK"' ERR
 echo "nfs-ganesha debug log script running as $(whoami) on $(hostname --fqdn)"
-sed -i 's/NIV_EVENT/NIV_DEBUG/g' /etc/sysconfig/nfs-ganesha
+sed -i 's/NIV_EVENT/NIV_DEBUG/g' /etc/sysconfig/nfs-ganesha || true
+sed -i 's/NIV_EVENT/NIV_DEBUG/g' /etc/sysconfig/ganesha || true
 cat /etc/sysconfig/nfs-ganesha
 rm -rf /var/log/ganesha/ganesha.log
 systemctl restart nfs-ganesha.service
