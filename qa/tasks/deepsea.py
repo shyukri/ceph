@@ -573,6 +573,7 @@ class DeepSea(Task):
             self.log.warning("Problem with ctx summary key? ctx is {}".format(self.ctx))
         if not success:
             self.ctx.cluster.run(args="rpm -qa | sort")
+        self.sm.gather_logfile('/var/log/ganesha/ganesha.log')
         self.log.debug("end of end method")
 
     def teardown(self):
