@@ -27,9 +27,17 @@ function nfs_ganesha_debug_log {
 set -ex
 trap 'echo "Result: NOT_OK"' ERR
 echo "nfs-ganesha debug log script running as $(whoami) on $(hostname --fqdn)"
-sed -i 's/NIV_EVENT/NIV_FULL_DEBUG/g' /etc/sysconfig/nfs-ganesha || true
-sed -i 's/NIV_EVENT/NIV_FULL_DEBUG/g' /etc/sysconfig/ganesha || true
-cat /etc/sysconfig/nfs-ganesha
+ETC_SYSCONFIG=
+if [ -f /etc/sysconfig/nfs-ganesha ] ; then
+    ETC_SYSCONFIG="/etc/sysconfig/nfs-ganesha"
+elif [ -f /etc/sysconfig/ganesha ] ; then
+    ETC_SYSCONFIG="/etc/sysconfig/ganesha"
+else
+    echo "No NFS-Ganesha sysconfig; is NFS-Ganesha installed on this host?" >/dev/null
+    false
+fi
+sed -i 's/NIV_EVENT/NIV_FULL_DEBUG/g' $ETC_SYSCONFIG
+cat $ETC_SYSCONFIG
 rm -rf /var/log/ganesha/ganesha.log
 systemctl restart nfs-ganesha.service
 systemctl is-active nfs-ganesha.service
