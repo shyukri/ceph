@@ -23,7 +23,7 @@ EOF
 function nfs_ganesha_debug_log {
   local GANESHANODE=$(_nfs_ganesha_node)
   local TESTSCRIPT=/tmp/test-nfs-ganesha.sh
-  cat <<EOF > $TESTSCRIPT
+  cat <<'EOF' > $TESTSCRIPT
 set -ex
 trap 'echo "Result: NOT_OK"' ERR
 echo "nfs-ganesha debug log script running as $(whoami) on $(hostname --fqdn)"
