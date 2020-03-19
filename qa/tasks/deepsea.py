@@ -551,9 +551,9 @@ class DeepSea(Task):
         self.master_remote.run(
             args="sudo systemctl status --lines=0 ntpd.service"
             )
-        self._master_python_version(2)
-        if not self._master_python_version(3):
-            raise ConfigError(self.err_prefix + "Python 3 not installed on master node")
+        if not self._master_python_version(2):
+            raise ConfigError(self.err_prefix + "Python 2 not installed on master node")
+        self._master_python_version(3)
         if 'deepsea_installed' not in deepsea_ctx:
             self._disable_gpg_checks()
             self.master_remote.run(args="zypper lr -upEP")
