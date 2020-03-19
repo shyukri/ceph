@@ -919,9 +919,9 @@ class InstallMigrationRPM(DeepSea):
             self.rpm_name = str(self.config.get("rpm", ''))
             self.rpm_location = str(self.config.get("url", ''))
             self._install_lynx_on_teuthology_server()
-            self.log.info(anchored("installing migration RPM {} from \
-                                   location {} on all nodes" .format\
-                                   (self.rpm_name, self.rpm_location)))
+            self.log.info(anchored("installing migration RPM {} from "
+                                   "location {} on all nodes"
+                                   .format(self.rpm_name, self.rpm_location)))
             self.scripts.run(
                 self.ctx.cluster,
                 'install_migration_rpm.sh',
@@ -942,7 +942,6 @@ class InstallMigrationRPM(DeepSea):
                 "or optionally if you get the rpm from remote repo add"
                 "- url: URL_of_repo_of_rpm"
                 )
-
 
     def end(self):
         pass
@@ -1475,9 +1474,18 @@ class Policy(DeepSea):
         Make the necessary changes to policy.cfg so it's compatible with ses6
         """
         for hostname in self.nodes_storage:
-            self.master_remote.sh("sudo bash -c 'echo role-storage/cluster/{}.sls >> {}/policy.cfg'".format(hostname, proposals_dir))
-        self.master_remote.sh("sudo bash -c 'sed -i '/profile/d' {}/policy.cfg'".format(proposals_dir))
-        self.master_remote.sh("sudo bash -c 'sed -i '/openattic/d' {}/policy.cfg'".format(proposals_dir))
+            self.master_remote.sh(
+                "sudo bash -c 'echo role-storage/cluster/{}.sls >> {}/policy.cfg'"
+                .format(hostname, proposals_dir)
+                )
+        self.master_remote.sh(
+            "sudo bash -c 'sed -i '/profile/d' {}/policy.cfg'"
+            .format(proposals_dir)
+            )
+        self.master_remote.sh(
+            "sudo bash -c 'sed -i '/openattic/d' {}/policy.cfg'"
+            .format(proposals_dir)
+            )
         self._cat_policy_cfg()
 
     def begin(self):
@@ -1841,12 +1849,12 @@ class Toolbox(DeepSea):
             self.log.info("Running {}-noout for OSDs on {}".format(add_or_rm, hostname))
             cmd = ("sudo ceph osd tree -f json | "
                    "jq -c '[.nodes[] | select(.name == \"{}\")][0].children'"
-                    .format(hostname.rstrip(".teuthology")))
+                   .format(hostname.rstrip(".teuthology")))
         else:
             self.log.info("Running {}-noout for OSDs on {}".format(add_or_rm, hostname))
             cmd = ("sudo ceph osd tree -f json | "
                    "jq -c '[.nodes[] | select(.name == \"{}\")][0].children'"
-                    .format(hostname.rstrip(".ecp.suse.de")))
+                   .format(hostname.rstrip(".ecp.suse.de")))
         osds = json.loads(remote.sh(cmd))
         self.log.info("Running {}-noout for OSDs ->{}<-".format(add_or_rm, osds))
         for osd in osds:
@@ -1895,10 +1903,12 @@ class Toolbox(DeepSea):
         """
         The funtion expects 'client' teuthology role to be present.
         Then it mounts cephfs volume using a random mon as mount point and checks
-        if the file that was created by nfs-ganesha smoke-test is there 
+        if the file that was created by nfs-ganesha smoke-test is there
         """
         self.log.info(anchored("Running Cephfs sanity test"))
-        secret = self.master_remote.sh("sudo grep 'key =' /etc/ceph/ceph.client.admin.keyring ").split()[2]
+        secret = self.master_remote.sh(
+            "sudo grep 'key =' /etc/ceph/ceph.client.admin.keyring "
+            ).split()[2]
         remote = get_remote_for_role(self.ctx, "client.0")
         testmon = self.role_type_present("mon")
         remote.sh("sudo test -d /mnt")
@@ -1912,13 +1922,15 @@ class Toolbox(DeepSea):
     def ganesha_sanity_test(self):
         """
         Connect to nfs-ganesha mode and create and then remove a file
-        mounts with options nfs nfs3 and nfs4 
+        mounts with options nfs nfs3 and nfs4
         """
-        nfs_v = ["", "nfsvers=3" , "nfsvers=4"]
+        nfs_v = ["", "nfsvers=3", "nfsvers=4"]
         self.log.info(anchored("Running NFS sanity test"))
         remote = get_remote_for_role(self.ctx, "client.0")
         ganesha = self.role_type_present("ganesha")
-        remote.sh("sudo zypper --non-interactive --no-gpg-checks install --force --no-recommends nfs-client")
+        remote.sh("sudo "
+                  "zypper --non-interactive --no-gpg-checks "
+                  "install --force --no-recommends nfs-client")
         remote.sh("sudo test '!' -e /root/mnt")
         remote.sh("sudo mkdir /root/mnt")
         for version in nfs_v:
@@ -1945,8 +1957,12 @@ class Toolbox(DeepSea):
         oa_host = self.role_type_present("openattic")
         if oa_host:
             remote = self.remotes[oa_host]
-            self.master_remote.sh("sudo salt {} state.apply ceph.rescind.openattic".format(remote.hostname))
-            self.master_remote.sh("sudo salt {} state.apply ceph.remove.openattic".format(remote.hostname))
+            self.master_remote.sh(
+                "sudo salt {} state.apply ceph.rescind.openattic".format(remote.hostname)
+                )
+            self.master_remote.sh(
+                "sudo salt {} state.apply ceph.remove.openattic".format(remote.hostname)
+                )
 
     def rm_noout(self, **kwargs):
         """
