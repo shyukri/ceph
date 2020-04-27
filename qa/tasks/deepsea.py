@@ -9,10 +9,9 @@ import logging
 import time
 import yaml
 
-from salt_manager import SaltManager
-from scripts import Scripts
-from teuthology import misc
-from util import (
+from tasks.salt_manager import SaltManager
+from tasks.scripts import Scripts
+from tasks.util import (
     copy_directory_recursively,
     get_remote_for_role,
     introspect_roles,
@@ -21,6 +20,7 @@ from util import (
     sudo_append_to_file,
     )
 
+from teuthology import misc
 from teuthology.exceptions import (
     CommandFailedError,
     ConfigError,
@@ -512,7 +512,7 @@ class DeepSea(Task):
         If the role type is absent, returns the empty string.
         """
         role_dict = self.role_lookup_table.get(role_type, {})
-        host = role_dict[role_dict.keys()[0]] if role_dict else ''
+        host = role_dict[next(iter(role_dict.keys()))] if role_dict else ''
         return host
 
     # Teuthology iterates through the tasks stanza twice: once to "execute"
@@ -1587,7 +1587,7 @@ class Reboot(DeepSea):
                 "config dictionary may contain only one key. "
                 "You provided ->{}<- keys".format(config_keys)
                 )
-        role_spec, paramdict = self.config.items()[0]
+        role_spec, paramdict = list(self.config.items())[0]
         if not isinstance(paramdict, dict):
             paramdict = {'tries': reboot_tries}
         paramdict_keys = len(paramdict)
@@ -1599,7 +1599,7 @@ class Reboot(DeepSea):
                     "parameter dict may contain only one key. "
                     "You provided ->{}<- keys".format(paramdict_keys)
                     )
-            tries, tries_num = paramdict.items()[0]
+            tries, tries_num = list(paramdict.items())[0]
             if tries != 'tries':
                 raise ConfigError(
                     self.err_prefix +
@@ -1742,7 +1742,7 @@ class Repository(DeepSea):
                 "config dictionary may contain only one key. "
                 "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
                 )
-        role_spec, repositories = self.config.items()[0]
+        role_spec, repositories = list(self.config.items())[0]
         self.log.info("Current role is {} and repositories are {}".format(role_spec, repositories))
         if role_spec == "patch":
             self.log.info("Maintenance Update scenario starting...")
@@ -1815,7 +1815,7 @@ class Script(DeepSea):
                 "config dictionary may contain only one key. "
                 "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
                 )
-        role_spec, role_dict = self.config.items()[0]
+        role_spec, role_dict = list(self.config.items())[0]
         role_keys = len(role_dict)
         if role_keys > 1:
             raise ConfigError(
@@ -1827,16 +1827,16 @@ class Script(DeepSea):
             remote = self.ctx.cluster
         else:
             remote = get_remote_for_role(self.ctx, role_spec)
-        script_spec, script_dict = role_dict.items()[0]
+        script_spec, script_dict = list(role_dict.items())[0]
         if script_dict is None:
             args = []
         if isinstance(script_dict, dict):
-            if len(script_dict) > 1 or script_dict.keys()[0] != 'args':
+            if len(script_dict) > 1 or list(script_dict.keys())[0] != 'args':
                 raise ConfigError(
                     self.err_prefix +
                     'script dicts may only contain one key (args)'
                     )
-            args = script_dict.values()[0] or []
+            args = list(script_dict.values())[0] or []
             if not isinstance(args, list):
                 raise ConfigError(self.err_prefix + 'script args must be a list')
         self.scripts.run(
@@ -1902,7 +1902,7 @@ class Toolbox(DeepSea):
         Expects one key - a teuthology 'osd' role specifying one of the storage nodes.
         Enumerates the OSDs on this node and does 'add-noout' on each of them.
         """
-        role = kwargs.keys()[0]
+        role = list(kwargs.keys())[0]
         self._noout("add", role)
 
     def ceph_health_test(self, **kwargs):
@@ -1924,7 +1924,7 @@ class Toolbox(DeepSea):
                 "post_upgrade_status_checks config dictionary may contain only one key. "
                 "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
                 )
-        role_spec, throwaway = kwargs.items()[0]
+        role_spec, throwaway = list(kwargs.items())[0]
         remote = get_remote_for_role(self.ctx, role_spec)
         self.log.info("Teuthology role {} is {}".format(role_spec, remote.hostname))
         remote.sh('cat /etc/os-release')
@@ -2006,7 +2006,7 @@ class Toolbox(DeepSea):
         Expects one key - a teuthology 'osd' role specifying one of the storage nodes.
         Enumerates the OSDs on this node and does 'rm-noout' on each of them.
         """
-        role = kwargs.keys()[0]
+        role = list(kwargs.keys())[0]
         self._noout("rm", role)
 
     def wait_for_health_ok(self, **kwargs):
@@ -2029,7 +2029,7 @@ class Toolbox(DeepSea):
                     "wait_for_health_ok config dictionary may contain only one key. "
                     "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
                     )
-            timeout_spec, timeout_minutes = kwargs.items()[0]
+            timeout_spec, timeout_minutes = list(kwargs.items())[0]
         else:
             timeout_minutes = 120
         self.log.info("Waiting up to ->{}<- minutes for HEALTH_OK".format(timeout_minutes))
@@ -2065,7 +2065,7 @@ class Toolbox(DeepSea):
                 "config dictionary may contain only one key. "
                 "You provided ->{}<- keys ({})".format(len(config_keys), config_keys)
                 )
-        tool_spec, kwargs = self.config.items()[0]
+        tool_spec, kwargs = next(iter(self.config.items()))
         kwargs = {} if not kwargs else kwargs
         method = getattr(self, tool_spec, None)
         if method:
@@ -2147,7 +2147,7 @@ class Validation(DeepSea):
                 self.scripts.run(
                     remote,
                     'iscsi_smoke_test.sh',
-                    args=[kwargs.keys()[0]]
+                    args=[list(kwargs.keys())[0]]
                     )
 
     def openattic_smoke_test(self, **kwargs):
