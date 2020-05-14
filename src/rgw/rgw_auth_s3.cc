@@ -513,6 +513,7 @@ std::string get_v4_canonical_qs(const req_info& info, const bool using_qs)
     // in its implementation allowing non-url-encoded slashes to be present in
     // presigned urls for instance
     canonical_qs_map[aws4_uri_recode(key, true)] = aws4_uri_recode(val, true);
+  }
 
   /* Thanks to the early exist we have the guarantee that canonical_qs_map has
    * at least one element. */
