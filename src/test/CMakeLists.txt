@@ -60,6 +60,7 @@ add_subdirectory(system)
 if(WITH_FIO)
   add_subdirectory(fio)
 endif()
+add_subdirectory(lazy-omap-stats)
 
 # test_timers
 add_executable(ceph_test_timers
@@ -548,6 +549,7 @@ add_dependencies(tests
   ceph-osd
   ceph-dencoder
   ceph-objectstore-tool
+  ceph-kvstore-tool
   ceph-monstore-tool
   osdmaptool
   ceph_example
