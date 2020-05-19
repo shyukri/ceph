@@ -245,6 +245,8 @@ else
     opensuse*|suse|sles)
         echo "Using zypper to install dependencies"
         zypp_install="zypper --gpg-auto-import-keys --non-interactive install --no-recommends"
+        # force python3-base and python3-devel to the same version number
+        $SUDO $zypp_install '--force' python3-base python3-devel
         $SUDO $zypp_install systemd-rpm-macros
         munge_ceph_spec_in $DIR/ceph.spec
         $SUDO $zypp_install $(rpmspec -q --buildrequires $DIR/ceph.spec) || exit 1
