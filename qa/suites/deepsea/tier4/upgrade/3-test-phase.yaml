@@ -19,7 +19,8 @@ tasks:
         client.salt_master:
                 - 'deepsea --version || true'
                 - 'salt-run deepsea.version 2>/dev/null || true'
-                - 'salt-run status.report 2>/dev/null'
+                - 'salt-run upgrade.status 2>/dev/null'
+                - 'zypper --non-interactive --no-gpg-checks install --force --no-recommends deepsea-cli'
 - print: "Upgrading first cluster node (MON+MGR+OSD) from SES5 to SES6"
 - exec:
         osd.0:
@@ -48,7 +49,7 @@ tasks:
                 osd.0:
 - exec:
         client.salt_master:
-                - 'salt-run status.report 2>/dev/null'
+                - 'salt-run upgrade.status 2>/dev/null'
 - deepsea.toolbox:
         wait_for_health_ok:
 - print: "Upgrading second cluster node (OSD-only) from SES5 to SES6"
@@ -75,7 +76,7 @@ tasks:
                 osd.1:
 - exec:
         client.salt_master:
-                - 'salt-run status.report 2>/dev/null'
+                - 'salt-run upgrade.status 2>/dev/null'
                 - "echo 'All nodes should now be running nautilus'"
 - deepsea.toolbox:
         wait_for_health_ok:
