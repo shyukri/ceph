@@ -7851,12 +7851,12 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p,
     fill_statx(dn->inode, caps, &stx);
 
     uint64_t next_off = dn->offset + 1;
+    fill_dirent(&de, dn->name.c_str(), stx.stx_mode, stx.stx_ino, next_off);
     ++pd;
     if (pd == dir->readdir_cache.end())
       next_off = dir_result_t::END;
 
     Inode *in = NULL;
-    fill_dirent(&de, dn->name.c_str(), stx.stx_mode, stx.stx_ino, next_off);
     if (getref) {
       in = dn->inode.get();
       _ll_get(in);
@@ -8729,28 +8729,56 @@ loff_t Client::_lseek(Fh *f, loff_t offset, int whence)
 {
   Inode *in = f->inode.get();
   int r;
+  loff_t pos = -1;
+
+  if (whence == SEEK_END || whence == SEEK_DATA || whence == SEEK_HOLE) {
+    r = _getattr(in, CEPH_STAT_CAP_SIZE, f->actor_perms);
+    if (r < 0) {
+      return r;
+    }
+  }
 
   switch (whence) {
   case SEEK_SET:
-    f->pos = offset;
+    pos = offset;
     break;
 
   case SEEK_CUR:
-    f->pos += offset;
+    pos += offset;
     break;
 
   case SEEK_END:
-    r = _getattr(in, CEPH_STAT_CAP_SIZE, f->actor_perms);
-    if (r < 0)
-      return r;
-    f->pos = in->size + offset;
+    pos = in->size + offset;
+    break;
+
+  case SEEK_DATA:
+    if (offset < 0 || offset >= in->size) {
+      r = -ENXIO;
+      return offset; 
+    }
+    pos = offset;
+    break;
+
+  case SEEK_HOLE:
+    if (offset < 0 || offset >= in->size) {
+      r = -ENXIO;
+      pos = offset; 
+    } else {
+      pos = in->size;
+    }
     break;
 
   default:
     ceph_abort();
   }
 
-  ldout(cct, 8) << "_lseek(" << f << ", " << offset << ", " << whence << ") = " << f->pos << dendl;
+  if (pos < 0) {
+    return -EINVAL;
+  } else {
+    f->pos = pos;
+  }
+
+  ldout(cct, 3) << "_lseek(" << f << ", " << offset << ", " << whence << ") = " << f->pos << dendl;
   return f->pos;
 }
 
